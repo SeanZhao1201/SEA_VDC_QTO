@@ -15,6 +15,8 @@ namespace QTO_Tool
         public string nameAbb { get; set; }
         public string id { get; set; }
 
+        public Dictionary<string, string> AttributeUserStrings { get; private set; }
+
         public string layerName { get; set; }
 
         public Dictionary<string, string> parsedLayerName = new Dictionary<string, string>();
@@ -73,6 +75,8 @@ namespace QTO_Tool
             this.geometry = (Brep)rhobj.Geometry;
 
             this.id = rhobj.Id.ToString();
+
+            AttributeUserStrings = Methods.CopyRhinoAttributeUserStrings(rhobj);
 
             for (int i = 0; i < _layerName.Split('_').ToList().Count; i++)
             {

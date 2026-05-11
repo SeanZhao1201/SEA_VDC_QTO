@@ -18,6 +18,9 @@ namespace QTO_Tool
         public string floor { get; set; }
         public string nameAbb { get; set; }
         public string id { get; set; }
+
+        public Dictionary<string, string> AttributeUserStrings { get; private set; }
+
         public Dictionary<string, string> parsedLayerName = new Dictionary<string, string>();
         public double volume { get; set; }
         public double height { get; set; }
@@ -41,6 +44,8 @@ namespace QTO_Tool
             geometry = (Brep)rhobj.Geometry;
 
             id = rhobj.Id.ToString();
+
+            AttributeUserStrings = Methods.CopyRhinoAttributeUserStrings(rhobj);
 
             for (int i = 0; i < layerName.Split('_').ToList().Count; i++)
             {

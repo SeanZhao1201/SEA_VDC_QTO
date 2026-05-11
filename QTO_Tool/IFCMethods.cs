@@ -442,6 +442,36 @@ namespace QTO_Tool
             return buildingElements;
         }
 
+        private static void AttachQtoAttributesPropertySet(IfcStore model, IfcObjectDefinition element, Dictionary<string, string> attributeUserStrings)
+        {
+            if (attributeUserStrings == null || attributeUserStrings.Count == 0)
+                return;
+
+            model.Instances.New<IfcRelDefinesByProperties>(rel =>
+            {
+                rel.RelatedObjects.Add(element);
+
+                rel.RelatingPropertyDefinition = model.Instances.New<IfcPropertySet>(pset =>
+                {
+                    pset.Name = "QTO Attributes";
+
+                    int unnamedIndex = 0;
+                    foreach (var kvp in attributeUserStrings.OrderBy(x => x.Key, StringComparer.Ordinal))
+                    {
+                        string propName = string.IsNullOrWhiteSpace(kvp.Key)
+                            ? "EmptyKey_" + (++unnamedIndex).ToString()
+                            : kvp.Key;
+
+                        pset.HasProperties.Add(model.Instances.New<IfcPropertySingleValue>(p =>
+                        {
+                            p.Name = propName;
+                            p.NominalValue = new IfcText(kvp.Value ?? "");
+                        }));
+                    }
+                });
+            });
+        }
+
         private static IfcWall CreateWall(IfcStore model, WallTemplate wallTemplate, IfcShapeRepresentation shape, Plane insertPlane)
         {
             var wall = model.Instances.New<IfcWall>();
@@ -510,6 +540,8 @@ namespace QTO_Tool
                     });
                 });
             });
+
+            AttachQtoAttributesPropertySet(model, wall, wallTemplate.AttributeUserStrings);
 
             wall.PredefinedType = IfcWallTypeEnum.STANDARD;
 
@@ -587,6 +619,8 @@ namespace QTO_Tool
                 });
             });
 
+            AttachQtoAttributesPropertySet(model, beam, beamTemplate.AttributeUserStrings);
+
             beam.PredefinedType = IfcBeamTypeEnum.BEAM;
 
             IFCMethods.ApplyRepresentationAndPlacement(model, beam, shape, insertPlane);
@@ -637,6 +671,8 @@ namespace QTO_Tool
                     });
                 });
             });
+
+            AttachQtoAttributesPropertySet(model, column, columnTemplate.AttributeUserStrings);
 
             column.PredefinedType = IfcColumnTypeEnum.COLUMN;
 
@@ -714,6 +750,8 @@ namespace QTO_Tool
                 });
             });
 
+            AttachQtoAttributesPropertySet(model, curb, curbTemplate.AttributeUserStrings);
+
             curb.PredefinedType = IfcWallTypeEnum.STANDARD;
 
             IFCMethods.ApplyRepresentationAndPlacement(model, curb, shape, insertPlane);
@@ -769,6 +807,8 @@ namespace QTO_Tool
                     });
                 });
             });
+
+            AttachQtoAttributesPropertySet(model, footing, footingTemplate.AttributeUserStrings);
 
             footing.PredefinedType = IfcFootingTypeEnum.PAD_FOOTING;
 
@@ -851,6 +891,8 @@ namespace QTO_Tool
                 });
             });
 
+            AttachQtoAttributesPropertySet(model, continuousFooting, continuousFootingTemplate.AttributeUserStrings);
+
             continuousFooting.PredefinedType = IfcFootingTypeEnum.STRIP_FOOTING;
 
             IFCMethods.ApplyRepresentationAndPlacement(model, continuousFooting, shape, insertPlane);
@@ -922,6 +964,8 @@ namespace QTO_Tool
                 });
             });
 
+            AttachQtoAttributesPropertySet(model, slab, slabTemplate.AttributeUserStrings);
+
             slab.PredefinedType = IfcSlabTypeEnum.FLOOR;
 
             IFCMethods.ApplyRepresentationAndPlacement(model, slab, shape, insertPlane);
@@ -962,6 +1006,8 @@ namespace QTO_Tool
                     });
                 });
             });
+
+            AttachQtoAttributesPropertySet(model, styrofoam, styrofoamTemplate.AttributeUserStrings);
 
             styrofoam.PredefinedType = IfcSlabTypeEnum.NOTDEFINED;
 
@@ -1028,6 +1074,8 @@ namespace QTO_Tool
                     });
                 });
             });
+
+            AttachQtoAttributesPropertySet(model, stair, stairTemplate.AttributeUserStrings);
 
             stair.PredefinedType = IfcStairTypeEnum.NOTDEFINED;
 

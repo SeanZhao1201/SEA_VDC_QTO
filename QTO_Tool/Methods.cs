@@ -2,6 +2,7 @@
 using System.Windows;
 using System.Linq;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.Windows.Interop;
 using System.Reflection;
 using Rhino;
@@ -17,6 +18,38 @@ namespace QTO_Tool
     class Methods
     {
         public static Random random = new Random();
+
+        /// <summary>
+        /// Copies Rhino "Attribute User Text" (object user strings) into a dictionary for IFC export.
+        /// </summary>
+        public static Dictionary<string, string> CopyRhinoAttributeUserStrings(RhinoObject rhobj)
+        {
+            var dict = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (rhobj?.Attributes == null)
+                return dict;
+
+            NameValueCollection nvc = rhobj.Attributes.GetUserStrings();
+            if (nvc == null)
+                return dict;
+
+            string[] keys = nvc.AllKeys;
+            if (keys == null)
+                return dict;
+
+            foreach (string key in keys)
+            {
+                if (string.IsNullOrWhiteSpace(key))
+                    continue;
+
+                string[] values = nvc.GetValues(key);
+                if (values != null && values.Length > 0)
+                    dict[key] = string.Join(", ", values);
+                else
+                    dict[key] = nvc[key] ?? string.Empty;
+            }
+
+            return dict;
+        }
 
         internal static void SetChildStatus(QTOUI mw, ChildStatus winChildStatus)
         {

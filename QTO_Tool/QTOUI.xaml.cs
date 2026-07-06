@@ -1155,23 +1155,28 @@ namespace QTO_Tool
 
                     IfcBuilding building = IFCMethods.CreateBuilding(project, "Concrete Building");
 
-                    IFCMethods.CreateAndAddIFCElement(project, building, this.allWalls);
+                    AllTemplates[] templateContainers = new AllTemplates[]
+                    {
+                        this.allWalls, this.allBeams, this.allColumns, this.allContinuousFootings,
+                        this.allFootings, this.allSlabs, this.allCurbs, this.allStyrofoams, this.allStairs
+                    };
 
-                    IFCMethods.CreateAndAddIFCElement(project, building, this.allBeams);
+                    // Union of the floor-name bucket keys across all containers, so
+                    // every bucket (including "-") can be routed to a storey.
+                    HashSet<string> floorNamesInUse = new HashSet<string>();
 
-                    IFCMethods.CreateAndAddIFCElement(project, building, this.allColumns);
+                    foreach (AllTemplates templateContainer in templateContainers)
+                    {
+                        floorNamesInUse.UnionWith(templateContainer.allTemplates.Keys);
+                    }
 
-                    IFCMethods.CreateAndAddIFCElement(project, building, this.allContinuousFootings);
+                    Dictionary<string, IfcBuildingStorey> storeysByFloorName = IFCMethods.CreateBuildingStoreys(
+                        project, building, ElevationInput.floorElevations, floorNamesInUse);
 
-                    IFCMethods.CreateAndAddIFCElement(project, building, this.allFootings);
-
-                    IFCMethods.CreateAndAddIFCElement(project, building, this.allSlabs);
-
-                    IFCMethods.CreateAndAddIFCElement(project, building, this.allCurbs);
-
-                    IFCMethods.CreateAndAddIFCElement(project, building, this.allStyrofoams);
-
-                    IFCMethods.CreateAndAddIFCElement(project, building, this.allStairs);
+                    foreach (AllTemplates templateContainer in templateContainers)
+                    {
+                        IFCMethods.CreateAndAddIFCElement(project, storeysByFloorName, templateContainer);
+                    }
 
                     project.SaveAs(outputPath);
 

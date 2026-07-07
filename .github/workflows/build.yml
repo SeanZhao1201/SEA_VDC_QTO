@@ -1,0 +1,53 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: nuget/setup-nuget@v2
+
+      - name: Restore NuGet packages
+        run: nuget restore QTO_Tool\QTO_Tool.csproj -SolutionDirectory .
+
+      - name: Build plugin
+        run: msbuild QTO_Tool\QTO_Tool.csproj /p:Configuration=Release /p:Platform=AnyCPU /m /v:minimal
+
+      - name: Stage plugin files
+        shell: pwsh
+        run: |
+          Copy-Item QTO_Tool\bin dist -Recurse
+          Get-ChildItem dist -Recurse -Filter *.pdb | Remove-Item
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QTO_Tool
+          path: dist
+
+      - name: Zip release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: Compress-Archive -Path dist\* -DestinationPath QTO_Tool.zip
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: QTO_Tool.zip
+          generate_release_notes: true

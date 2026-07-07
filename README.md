@@ -53,7 +53,12 @@ The solution contains a second project, `Turner_Seattle_VDC_Server`, a standalon
 
 ## Creating a release
 
+CI (GitHub Actions, `.github/workflows/build.yml`) compiles the plugin on a Windows runner for every push and pull request and uploads the plugin folder as a build artifact — so no local Windows machine is needed to produce binaries.
+
+To publish a release:
+
 1. Bump `AssemblyVersion`/`AssemblyFileVersion` in `QTO_Tool/Properties/AssemblyInfo.cs`.
-2. Build the `QTO_Tool` project in `Release` configuration on Windows.
-3. Zip the contents of `QTO_Tool\bin\` (the `.rhp` plus all `.dll` files, excluding `.pdb`) as `QTO_Tool.zip`.
-4. Tag the commit (`git tag vX.Y.Z && git push --tags`) and create a GitHub release for the tag, attaching `QTO_Tool.zip`.
+2. Tag the commit and push the tag: `git tag vX.Y.Z && git push --tags`.
+3. CI builds the tag and automatically creates a GitHub release with `QTO_Tool.zip` attached.
+
+For a manual build instead: build the `QTO_Tool` project in `Release` configuration on Windows and zip the contents of `QTO_Tool\bin\` (excluding `.pdb` files).

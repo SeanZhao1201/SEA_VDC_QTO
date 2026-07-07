@@ -22,6 +22,17 @@ namespace QTO_Tool
             {
                 if (layer.IsDeleted == false)
                 {
+                    // Layers without any objects (e.g. parent layers used for level grouping)
+                    // are not element layers and get no template row.
+                    Rhino.DocObjects.RhinoObject[] layerObjects = RunQTO.doc.Objects.FindByLayer(layer);
+
+                    if (layerObjects == null || layerObjects.Length == 0)
+                    {
+                        Logger.Info("Template list: skipping layer with no objects: " + layer.FullPath);
+
+                        continue;
+                    }
+
                     if (!String.IsNullOrWhiteSpace(layer.Name))
                     {
                         int layerNameValueLength = layer.Name.Split('_').Length;

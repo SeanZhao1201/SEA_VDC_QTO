@@ -114,7 +114,14 @@ namespace QTO_Tool
             Dictionary<Brep, string> newBreps = new Dictionary<Brep, string>();
             List<ObjectAttributes> newObjectAttributes = new List<ObjectAttributes>();
 
-            foreach (RhinoObject obj in RunQTO.doc.Objects)
+            // The loop adds and deletes document objects, which invalidates a live
+            // ObjectTable enumeration, so it iterates over a snapshot instead.
+            List<RhinoObject> docObjects = RunQTO.doc.Objects.ToList();
+
+            Logger.Info("Checkup: processing " + docObjects.Count + " objects (" +
+                docObjects.Count(o => o is InstanceObject) + " block instances).");
+
+            foreach (RhinoObject obj in docObjects)
             {
                 if (obj.IsValid)
                 {
@@ -212,16 +219,59 @@ namespace QTO_Tool
             ObjectAttributes[] objAtts = { };
             Rhino.Geometry.Transform[] objTransform = { };
 
-            List<Mesh> meshList = new List<Mesh>();
-            List<Brep> surfaceList = new List<Brep>();
-
-            RhinoObject[] subObjs = instanceObj.GetSubObjects();
-
+            // Explode(true) flattens nested instances. The piece geometry lives in
+            // block definition space; objTransform maps each piece to its world location.
             instanceObj.Explode(true, out geometryPieces, out objAtts, out objTransform);
 
-            foreach (RhinoObject subObj in subObjs)
+            for (int i = 0; i < geometryPieces.Length; i++)
             {
-                Methods.PrepareObject(subObj, _mainObjectAttributes, _surfaceList, _badGeometryCount, _blockLevel);
+                GeometryBase pieceGeometry = geometryPieces[i].Geometry.Duplicate();
+                pieceGeometry.Transform(objTransform[i]);
+
+                Brep tempBrep;
+
+                if (pieceGeometry is Brep)
+                {
+                    tempBrep = (Brep)pieceGeometry;
+                }
+                else if (pieceGeometry is Extrusion)
+                {
+                    tempBrep = Brep.TryConvertBrep(pieceGeometry);
+                }
+                else if (pieceGeometry is Mesh)
+                {
+                    tempBrep = Brep.CreateFromMesh((Mesh)pieceGeometry, true);
+                }
+                else
+                {
+                    tempBrep = null;
+                }
+
+                if (tempBrep == null)
+                {
+                    Logger.Warn("Checkup: skipping unsupported geometry '" + pieceGeometry.GetType().Name +
+                        "' inside block instance " + inputObj.Id);
+
+                    continue;
+                }
+
+                if (tempBrep.Faces.Count == 1)
+                {
+                    _surfaceList.Add(tempBrep);
+                }
+                else
+                {
+                    tempBrep.MergeCoplanarFaces(RunQTO.doc.ModelAngleToleranceRadians);
+
+                    if (tempBrep.IsSolid)
+                    {
+                        RunQTO.doc.Objects.Add(tempBrep, _mainObjectAttributes);
+                    }
+                    else
+                    {
+                        _surfaceList.Add(tempBrep);
+                    }
+                }
             }
         }
 
@@ -495,7 +545,13 @@ namespace QTO_Tool
         {
             int objectIndex = 0;
 
-            foreach (RhinoObject obj in RunQTO.doc.Objects)
+            // Snapshot the object table: the loop adds instances and deletes originals,
+            // which invalidates a live enumeration.
+            List<RhinoObject> docObjects = RunQTO.doc.Objects.ToList();
+
+            Logger.Info("Blockify: processing " + docObjects.Count + " objects.");
+
+            foreach (RhinoObject obj in docObjects)
             {
                 if (!(obj is InstanceObject))
                 {

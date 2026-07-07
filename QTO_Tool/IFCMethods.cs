@@ -1,4 +1,5 @@
-﻿using Rhino.Geometry;
+﻿using Rhino;
+using Rhino.Geometry;
 using Rhino.Geometry.Collections;
 using System;
 using System.Collections.Generic;
@@ -58,192 +59,141 @@ namespace QTO_Tool
         {
             using (var txn = model.BeginTransaction("Create Building"))
             {
+                // Project -> Site -> Building is the spatial decomposition most
+                // IFC viewers and model checkers expect.
+                var site = model.Instances.New<IfcSite>();
+                site.Name = "Site";
+                site.CompositionType = IfcElementCompositionEnum.ELEMENT;
+                site.ObjectPlacement = IFCMethods.CreateLocalPlacement(model, Plane.WorldXY);
+
                 var building = model.Instances.New<IfcBuilding>();
                 building.Name = name;
-
                 building.CompositionType = IfcElementCompositionEnum.ELEMENT;
-                IfcLocalPlacement localPlacement = model.Instances.New<IfcLocalPlacement>();
-                var placement = model.Instances.New<IfcAxis2Placement3D>();
-                localPlacement.RelativePlacement = placement;
-                placement.Location = model.Instances.New<IfcCartesianPoint>(p => p.SetXYZ(0, 0, 0));
+
+                IfcLocalPlacement buildingPlacement = IFCMethods.CreateLocalPlacement(model, Plane.WorldXY);
+                buildingPlacement.PlacementRelTo = site.ObjectPlacement;
+                building.ObjectPlacement = buildingPlacement;
+
                 //get the project there should only be one and it should exist
                 var project = model.Instances.OfType<IfcProject>().FirstOrDefault();
-                project?.AddBuilding(building);
+                project?.AddSite(site);
+                site.AddBuilding(building);
                 txn.Commit();
 
                 return building;
             }
         }
 
-        public static void CreateAndAddIFCElement(IfcStore model, IfcBuilding building, object templates)
+        /// <summary>
+        /// Creates one IfcBuildingStorey per floor defined in the elevation input and,
+        /// when needed, a single fallback storey for elements whose floor bucket has no
+        /// matching elevation entry (including the "-" bucket used when no elevations
+        /// were defined). Returns a lookup from every floor bucket name in use to the
+        /// storey that should contain its elements.
+        /// </summary>
+        public static Dictionary<string, IfcBuildingStorey> CreateBuildingStoreys(IfcStore model, IfcBuilding building,
+            Dictionary<double, string> floorElevations, IEnumerable<string> floorNamesInUse)
         {
-            if (templates.GetType() == typeof(QTO_Tool.AllWalls))
+            Dictionary<string, IfcBuildingStorey> storeysByFloorName = new Dictionary<string, IfcBuildingStorey>();
+
+            using (var txn = model.BeginTransaction("Create Building Storeys"))
             {
-                foreach (KeyValuePair<string, List<object>> entry in ((AllWalls)templates).allTemplates)
+                double unitFactor = IFCMethods.GetModelUnitToMillimeterFactor();
+
+                // Elevations are dictionary keys and therefore unique, but floor names
+                // are not; a name shared by several elevations gets one storey placed
+                // at the lowest of those elevations.
+                foreach (var floorGroup in floorElevations
+                    .GroupBy(entry => entry.Value)
+                    .OrderBy(group => group.Min(entry => entry.Key)))
                 {
-                    foreach (WallTemplate wallTemplate in entry.Value)
-                    {
-                        //begin a transaction
-                        using (var txn = model.BeginTransaction("Add IFC Element"))
-                        {
-                            List<IfcBuildingElement> buildingElements = IFCMethods.ToBuildingElementIfc(model, wallTemplate);
+                    double elevationInModelUnits = floorGroup.Min(entry => entry.Key);
 
-                            building.AddElement(buildingElements[0]);
-
-                            txn.Commit();
-                        }
-                    }
+                    storeysByFloorName[floorGroup.Key] = IFCMethods.CreateStorey(model, building,
+                        floorGroup.Key, elevationInModelUnits * unitFactor);
                 }
+
+                IfcBuildingStorey fallbackStorey = null;
+
+                foreach (string floorName in floorNamesInUse)
+                {
+                    if (storeysByFloorName.ContainsKey(floorName))
+                    {
+                        continue;
+                    }
+
+                    if (fallbackStorey == null)
+                    {
+                        fallbackStorey = IFCMethods.CreateStorey(model, building, "Unassigned", 0.0);
+                    }
+
+                    storeysByFloorName[floorName] = fallbackStorey;
+                }
+
+                txn.Commit();
             }
 
-            else if (templates.GetType() == typeof(QTO_Tool.AllBeams))
+            return storeysByFloorName;
+        }
+
+        private static IfcBuildingStorey CreateStorey(IfcStore model, IfcBuilding building, string name, double elevationInMillimeters)
+        {
+            var storey = model.Instances.New<IfcBuildingStorey>();
+            storey.Name = name;
+            storey.CompositionType = IfcElementCompositionEnum.ELEMENT;
+            storey.Elevation = new IfcLengthMeasure(elevationInMillimeters);
+
+            // The storey placement carries the elevation. Element geometry is written
+            // in absolute world coordinates and element placements are not chained to
+            // the storey, so this does not shift any geometry.
+            Plane storeyPlane = Plane.WorldXY;
+            storeyPlane.Origin = new Point3d(0, 0, elevationInMillimeters);
+
+            IfcLocalPlacement storeyPlacement = IFCMethods.CreateLocalPlacement(model, storeyPlane);
+            storeyPlacement.PlacementRelTo = building.ObjectPlacement;
+            storey.ObjectPlacement = storeyPlacement;
+
+            building.AddToSpatialDecomposition(storey);
+
+            return storey;
+        }
+
+        public static void CreateAndAddIFCElement(IfcStore model, Dictionary<string, IfcBuildingStorey> storeysByFloorName, object templates)
+        {
+            // Every concrete container (AllWalls, AllBeams, ...) derives from
+            // AllTemplates and buckets its templates by floor name, so a single
+            // loop covers all element types; ToBuildingElementIfc dispatches on
+            // the concrete template type.
+            if (!(templates is AllTemplates templateContainer))
             {
-                foreach (KeyValuePair<string, List<object>> entry in ((AllBeams)templates).allTemplates)
-                {
-                    foreach (BeamTemplate beamTemplate in entry.Value)
-                    {
-                        //begin a transaction
-                        using (var txn = model.BeginTransaction("Add IFC Element"))
-                        {
-                            List<IfcBuildingElement> buildingElements = IFCMethods.ToBuildingElementIfc(model, beamTemplate);
-
-                            building.AddElement(buildingElements[0]);
-
-                            txn.Commit();
-                        }
-                    }
-                }
+                throw new ArgumentException("Expected an AllTemplates-derived container.", nameof(templates));
             }
 
-            else if (templates.GetType() == typeof(QTO_Tool.AllColumns))
+            foreach (KeyValuePair<string, List<object>> entry in templateContainer.allTemplates)
             {
-                foreach (KeyValuePair<string, List<object>> entry in ((AllColumns)templates).allTemplates)
+                IfcBuildingStorey storey;
+                if (!storeysByFloorName.TryGetValue(entry.Key, out storey))
                 {
-                    foreach (ColumnTemplate columnTemplate in entry.Value)
-                    {
-                        //begin a transaction
-                        using (var txn = model.BeginTransaction("Add IFC Element"))
-                        {
-                            List<IfcBuildingElement> buildingElements = IFCMethods.ToBuildingElementIfc(model, columnTemplate);
-
-                            building.AddElement(buildingElements[0]);
-
-                            txn.Commit();
-                        }
-                    }
+                    throw new InvalidOperationException("No building storey was created for floor \"" + entry.Key + "\".");
                 }
-            }
 
-            else if (templates.GetType() == typeof(QTO_Tool.AllFootings))
-            {
-                foreach (KeyValuePair<string, List<object>> entry in ((AllFootings)templates).allTemplates)
+                foreach (object template in entry.Value)
                 {
-                    foreach (FootingTemplate footingTemplate in entry.Value)
+                    //begin a transaction
+                    using (var txn = model.BeginTransaction("Add IFC Element"))
                     {
-                        //begin a transaction
-                        using (var txn = model.BeginTransaction("Add IFC Element"))
+                        List<IfcBuildingElement> buildingElements = IFCMethods.ToBuildingElementIfc(model, template);
+
+                        if (buildingElements.Count == 0)
                         {
-                            List<IfcBuildingElement> buildingElements = IFCMethods.ToBuildingElementIfc(model, footingTemplate);
-
-                            building.AddElement(buildingElements[0]);
-
-                            txn.Commit();
+                            // Unknown template type: leave the transaction uncommitted
+                            // so it rolls back instead of writing an orphan material.
+                            continue;
                         }
-                    }
-                }
-            }
 
-            else if (templates.GetType() == typeof(QTO_Tool.AllContinousFootings))
-            {
-                foreach (KeyValuePair<string, List<object>> entry in ((AllContinousFootings)templates).allTemplates)
-                {
-                    foreach (ContinuousFootingTemplate continousFootingTemplate in entry.Value)
-                    {
-                        //begin a transaction
-                        using (var txn = model.BeginTransaction("Add IFC Element"))
-                        {
-                            List<IfcBuildingElement> buildingElements = IFCMethods.ToBuildingElementIfc(model, continousFootingTemplate);
+                        storey.AddElement(buildingElements[0]);
 
-                            building.AddElement(buildingElements[0]);
-
-                            txn.Commit();
-                        }
-                    }
-                }
-            }
-
-            else if (templates.GetType() == typeof(QTO_Tool.AllCurbs))
-            {
-                foreach (KeyValuePair<string, List<object>> entry in ((AllCurbs)templates).allTemplates)
-                {
-                    foreach (CurbTemplate curbTemplate in entry.Value)
-                    {
-                        //begin a transaction
-                        using (var txn = model.BeginTransaction("Add IFC Element"))
-                        {
-                            List<IfcBuildingElement> buildingElements = IFCMethods.ToBuildingElementIfc(model, curbTemplate);
-
-                            building.AddElement(buildingElements[0]);
-
-                            txn.Commit();
-                        }
-                    }
-                }
-            }
-
-            else if (templates.GetType() == typeof(QTO_Tool.AllSlabs))
-            {
-                foreach (KeyValuePair<string, List<object>> entry in ((AllSlabs)templates).allTemplates)
-                {
-                    foreach (SlabTemplate slabTemplate in entry.Value)
-                    {
-                        //begin a transaction
-                        using (var txn = model.BeginTransaction("Add IFC Element"))
-                        {
-                            List<IfcBuildingElement> buildingElements = IFCMethods.ToBuildingElementIfc(model, slabTemplate);
-
-                            building.AddElement(buildingElements[0]);
-
-                            txn.Commit();
-                        }
-                    }
-                }
-            }
-
-            else if (templates.GetType() == typeof(QTO_Tool.AllStyrofoams))
-            {
-                foreach (KeyValuePair<string, List<object>> entry in ((AllStyrofoams)templates).allTemplates)
-                {
-                    foreach (StyrofoamTemplate styrofoamTemplate in entry.Value)
-                    {
-                        //begin a transaction
-                        using (var txn = model.BeginTransaction("Add IFC Element"))
-                        {
-                            List<IfcBuildingElement> buildingElements = IFCMethods.ToBuildingElementIfc(model, styrofoamTemplate);
-
-                            building.AddElement(buildingElements[0]);
-
-                            txn.Commit();
-                        }
-                    }
-                }
-            }
-
-            else if (templates.GetType() == typeof(QTO_Tool.AllStairs))
-            {
-                foreach (KeyValuePair<string, List<object>> entry in ((AllStairs)templates).allTemplates)
-                {
-                    foreach (StairTemplate stairTemplate in entry.Value)
-                    {
-                        //begin a transaction
-                        using (var txn = model.BeginTransaction("Add IFC Element"))
-                        {
-                            List<IfcBuildingElement> buildingElements = IFCMethods.ToBuildingElementIfc(model, stairTemplate);
-
-                            building.AddElement(buildingElements[0]);
-
-                            txn.Commit();
-                        }
+                        txn.Commit();
                     }
                 }
             }
@@ -1084,47 +1034,27 @@ namespace QTO_Tool
             return stair;
         }
 
+        /// <summary>
+        /// Scale factor from the active document's unit system to millimeters.
+        /// The IFC model is initialized with SI units and a millimeter length
+        /// unit, so all exported coordinates and elevations must use it.
+        /// </summary>
+        public static double GetModelUnitToMillimeterFactor()
+        {
+            return RhinoMath.UnitScale(RunQTO.doc.ModelUnitSystem, UnitSystem.Millimeters);
+        }
+
         public static List<IfcCartesianPoint> VerticesToIfcCartesianPoints(IfcStore model, MeshVertexList vertices)
         {
             List<IfcCartesianPoint> ifcCartesianPoints = new List<IfcCartesianPoint>();
 
-            double x = 0;
-            double y = 0;
-            double z = 0;
+            double unitFactor = IFCMethods.GetModelUnitToMillimeterFactor();
 
             foreach (var vertex in vertices)
             {
                 IfcCartesianPoint currentVertex = model.Instances.New<IfcCartesianPoint>();
 
-                if (RunQTO.doc.GetUnitSystemName(true, true, true, true) == "mm")
-                {
-                    x = (double)vertex.X;
-                    y = (double)vertex.Y;
-                    z = (double)vertex.Z;
-                }
-
-                else if (RunQTO.doc.GetUnitSystemName(true, true, true, true) == "ft")
-                {
-                    x = (double)vertex.X * 304.8;
-                    y = (double)vertex.Y * 304.8;
-                    z = (double)vertex.Z * 304.8;
-                }
-
-                else if (RunQTO.doc.GetUnitSystemName(true, true, true, true) == "in")
-                {
-                    x = (double)vertex.X * 25.4;
-                    y = (double)vertex.Y * 25.4;
-                    z = (double)vertex.Z * 25.4;
-                }
-
-                else if (RunQTO.doc.GetUnitSystemName(true, true, true, true) == "m")
-                {
-                    x = (double)vertex.X * 1000;
-                    y = (double)vertex.Y * 1000;
-                    z = (double)vertex.Z * 1000;
-                }
-
-                currentVertex.SetXYZ(x, y, z);
+                currentVertex.SetXYZ(vertex.X * unitFactor, vertex.Y * unitFactor, vertex.Z * unitFactor);
 
                 ifcCartesianPoints.Add(currentVertex);
             }

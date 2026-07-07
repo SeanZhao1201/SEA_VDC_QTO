@@ -150,7 +150,8 @@ namespace QTO_Tool
 
             offsetDistance *= 0.48;
 
-            Curve treadBoundary = Curve.JoinCurves(this.upfacingFaces[0].Edges)[0].Simplify(CurveSimplifyOptions.All, RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians);
+            Curve treadBoundary = Curve.JoinCurves(this.upfacingFaces[0].Edges)[0];
+            treadBoundary = treadBoundary.Simplify(CurveSimplifyOptions.All, RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians) ?? treadBoundary;
 
             Curve curveOffset1 = treadBoundary.Offset(Plane.WorldXY, offsetDistance, RunQTO.doc.ModelAbsoluteTolerance, CurveOffsetCornerStyle.Sharp)[0];
             Curve curveOffset2 = treadBoundary.Offset(Plane.WorldXY, -offsetDistance, RunQTO.doc.ModelAbsoluteTolerance, CurveOffsetCornerStyle.Sharp)[0];

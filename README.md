@@ -37,7 +37,7 @@ A Rhino plugin for concrete quantity takeoff (QTO). It validates the solid geome
 ## IFC export details
 
 - Schema: IFC4, written with [xBIM Essentials](https://github.com/xBimTeam/XbimEssentials) 5.1.
-- Spatial structure: `IfcProject` → `IfcSite` ("Default Site") → `IfcBuilding` ("Concrete Building") → one `IfcBuildingStorey` per floor defined in the elevation input, ordered by elevation. Elements that have no floor assignment are contained in a fallback storey named `Unassigned`.
+- Spatial structure: `IfcProject` (named after the `.3dm` file) → `IfcSite` ("Site") → `IfcBuilding` ("Building") → one `IfcBuildingStorey` per floor defined in the elevation input, ordered by elevation. Elements that have no floor assignment are contained in a fallback storey named `Unassigned`.
 - Storey `Elevation` values are converted from the Rhino model unit to millimeters, matching the exported geometry (the IFC length unit is the millimeter).
 - Geometry: tessellated `IfcFaceBasedSurfaceModel` render meshes with layer color, in absolute world coordinates.
 - Properties: every element carries a `QTO Properties` set (name, floor, and its computed quantities) and, when present, a `QTO Attributes` set copied from the Rhino object's attribute user text.

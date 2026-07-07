@@ -1201,9 +1201,18 @@ namespace QTO_Tool
 
                     Logger.Info("IFC export started: " + outputPath);
 
-                    IfcStore project = IFCMethods.CreateandInitIFCModel(RunQTO.doc.Path.Replace(".3dm", ""));
+                    // The IfcProject carries the document file name only; the full path
+                    // would leak the local folder structure into shared files.
+                    string ifcProjectName = System.IO.Path.GetFileNameWithoutExtension(RunQTO.doc.Name);
 
-                    IfcBuilding building = IFCMethods.CreateBuilding(project, "Concrete Building");
+                    if (String.IsNullOrWhiteSpace(ifcProjectName))
+                    {
+                        ifcProjectName = "QTO Project";
+                    }
+
+                    IfcStore project = IFCMethods.CreateandInitIFCModel(ifcProjectName);
+
+                    IfcBuilding building = IFCMethods.CreateBuilding(project, "Building");
 
                     AllTemplates[] templateContainers = new AllTemplates[]
                     {

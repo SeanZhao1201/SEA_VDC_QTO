@@ -11,9 +11,9 @@ How `IFCMethods.cs` writes the IFC file, and why. Read this before changing anyt
 ## Spatial hierarchy
 
 ```
-IfcProject  (name = 3dm file path without extension)
-└─ IfcSite "Default Site"
-   └─ IfcBuilding "Concrete Building"
+IfcProject  (name = 3dm file name without path/extension; "QTO Project" if unsaved)
+└─ IfcSite "Site"
+   └─ IfcBuilding "Building"
       ├─ IfcBuildingStorey  (one per floor from the elevation input, ordered by elevation)
       │  └─ elements (IfcRelContainedInSpatialStructure)
       └─ IfcBuildingStorey "Unassigned"  (only created when needed)

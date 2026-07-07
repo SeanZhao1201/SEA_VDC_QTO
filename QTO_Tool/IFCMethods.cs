@@ -62,7 +62,7 @@ namespace QTO_Tool
                 // Project -> Site -> Building is the spatial decomposition most
                 // IFC viewers and model checkers expect.
                 var site = model.Instances.New<IfcSite>();
-                site.Name = "Default Site";
+                site.Name = "Site";
                 site.CompositionType = IfcElementCompositionEnum.ELEMENT;
                 site.ObjectPlacement = IFCMethods.CreateLocalPlacement(model, Plane.WorldXY);
 

@@ -16,22 +16,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Setup NuGet
-        uses: nuget/setup-nuget@v2
-
-      - name: Restore NuGet packages
-        run: nuget restore QTO_Tool\QTO_Tool.csproj -SolutionDirectory .
-
       - name: Build plugin
-        run: msbuild QTO_Tool\QTO_Tool.csproj /p:Configuration=Release /p:Platform=AnyCPU /m /v:minimal
+        run: dotnet build QTO_Tool\QTO_Tool.csproj -c Release
 
       - name: Stage plugin files
         shell: pwsh
         run: |
-          Copy-Item QTO_Tool\bin dist -Recurse
+          Copy-Item QTO_Tool\bin\Release\net48 dist -Recurse
           Get-ChildItem dist -Recurse -Filter *.pdb | Remove-Item
 
       - name: Upload build artifact

@@ -44,9 +44,9 @@ A Rhino plugin for concrete quantity takeoff (QTO). It validates the solid geome
 
 ## Building from source
 
-1. Open `QTO_Tool.sln` in Visual Studio on Windows (the plugin project targets .NET Framework 4.8.1 and uses `packages.config` — restore NuGet packages on first build).
-2. Build the `QTO_Tool` project. The post-build step renames the output assembly to `QTO_Tool.rhp` in `QTO_Tool\bin\`.
-3. Load `QTO_Tool\bin\QTO_Tool.rhp` in Rhino as described under Installation.
+1. On Windows, with any .NET 8+ SDK installed, run `dotnet build QTO_Tool\QTO_Tool.csproj -c Release` (or open `QTO_Tool.sln` in Visual Studio — the plugin project is SDK-style, targets .NET Framework 4.8, and restores its NuGet packages automatically).
+2. The build names the output assembly `QTO_Tool.rhp` directly, in `QTO_Tool\bin\Release\net48\`.
+3. Load `QTO_Tool\bin\Release\net48\QTO_Tool.rhp` in Rhino as described under Installation.
 
 The solution contains a second project, `Turner_Seattle_VDC_Server`, a standalone WPF utility for pushing QTO Excel output into a MySQL database. It is not required by, and not referenced from, the plugin.
 
@@ -60,4 +60,4 @@ To publish a release:
 2. Tag the commit and push the tag: `git tag vX.Y.Z && git push --tags`.
 3. CI builds the tag and automatically creates a GitHub release with `QTO_Tool.zip` attached.
 
-For a manual build instead: build the `QTO_Tool` project in `Release` configuration on Windows and zip the contents of `QTO_Tool\bin\` (excluding `.pdb` files).
+For a manual build instead: build the `QTO_Tool` project in `Release` configuration on Windows and zip the contents of `QTO_Tool\bin\Release\net48\` (excluding `.pdb` files).

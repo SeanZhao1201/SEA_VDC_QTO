@@ -19,9 +19,10 @@ A Rhino plugin for concrete quantity takeoff (QTO). It validates the solid geome
 
 ## Installation
 
-1. Download `QTO_Tool.zip` from the latest [GitHub Release](../../releases) (or build from source, see below) and unzip it. Keep `QTO_Tool.rhp` next to its accompanying `.dll` files — the plugin loads its IFC and Excel libraries from the same folder.
-2. In Rhino, open `Options` > `Plug-ins` > `Install...` and select `QTO_Tool.rhp` (or drag and drop the `.rhp` into the Rhino viewport).
-3. Restart Rhino and run the `RunQTO` command.
+1. Download `QTO_Tool.zip` from the latest [GitHub Release](../../releases) (or build from source, see below).
+2. Unzip the **entire archive** into a permanent folder of your choice (e.g. `Documents\QTO_Tool`). The zip contains `QTO_Tool.rhp` plus the `.dll` libraries it needs at runtime — the plugin loads its IFC and Excel libraries from its own folder, so all files must stay together and the `.rhp` must never be moved on its own.
+3. In Rhino, open `Options` > `Plug-ins` > `Install...` and select `QTO_Tool.rhp` (or drag and drop the `.rhp` into the Rhino viewport).
+4. Restart Rhino and run the `RunQTO` command. Rhino remembers the plugin's location — if you later move or delete the folder, repeat the install step from the new location.
 
 ## Usage
 

@@ -9,9 +9,7 @@ using Rhino;
 using Rhino.Geometry;
 using Rhino.DocObjects;
 using Rhino.Collections;
-using Rhino.DocObjects.Custom;
 using Newtonsoft.Json;
-using System.Security.Cryptography.X509Certificates;
 
 namespace QTO_Tool
 {
@@ -69,13 +67,6 @@ namespace QTO_Tool
             }
         }
 
-        //Utility functions to set the ownership of a window object
-        static void setOwner(System.Windows.Forms.Form ownerForm, Window window)
-        {
-            WindowInteropHelper helper = new WindowInteropHelper(window);
-            helper.Owner = ownerForm.Handle;
-        }
-
         public static double CalculateAngleThreshold(double angleThresholdSlider)
         {
             double result = 1;
@@ -91,6 +82,7 @@ namespace QTO_Tool
             return result;
         }
 
+        //Utility function to set the ownership of a window object
         static void setOwner(IntPtr ownerPtr, Window window)
         {
             WindowInteropHelper helper = new WindowInteropHelper(window);

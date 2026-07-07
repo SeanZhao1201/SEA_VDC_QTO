@@ -10,10 +10,10 @@ A Windows-only Rhino 7 plugin (`QTO_Tool`) for concrete quantity takeoff: it val
 
 ## Build
 
-- Requires Windows with Visual Studio/MSBuild — `QTO_Tool.csproj` is old-style (non-SDK) WPF targeting .NET Framework 4.8.1 with `packages.config` NuGet restore. It cannot be built with `dotnet build` or on macOS; on a Mac you can edit code but not compile or run it.
-- The post-build event renames the output DLL to `QTO_Tool.rhp` (the Rhino plugin extension). Load it in Rhino via Options > Plug-ins, then run the `RunQTO` command.
-- References RhinoCommon 7.28 (Rhino 7). It also loads in Rhino 8 on Windows (fallback if IFC export misbehaves there: `SetDotNetRuntime` > NETFramework), never on Rhino 8 for Mac. Full assessment and the stale-installer situation: `docs/rhino8-compat.md`.
-- The Debug `StartProgram` in the csproj points at a Rhino 6 path — stale, update locally as needed.
+- `QTO_Tool.csproj` is SDK-style WPF targeting net48 with `PackageReference`: build with `dotnet build QTO_Tool\QTO_Tool.csproj -c Release` on Windows (any .NET 8+ SDK; the `Microsoft.NETFramework.ReferenceAssemblies` package supplies the net48 targeting pack, so nothing else needs to be installed). Output goes to `QTO_Tool\bin\<Configuration>\net48\`. Windows-only: on a Mac you can edit code but not compile or run it (the Windows Desktop SDK rejects `UseWPF` builds on non-Windows with NETSDK1100).
+- `<TargetExt>.rhp</TargetExt>` names the output assembly `QTO_Tool.rhp` (the Rhino plugin extension) directly — there is no post-build rename. Load it in Rhino via Options > Plug-ins, then run the `RunQTO` command.
+- Excel COM interop types are embedded via the `EmbedExcelInteropTypes` target in the csproj (not via PackageReference metadata) because the WPF markup-compile temp project drops `EmbedInteropTypes` metadata from PackageReference items — don't "simplify" this away, and keep the explicit `Microsoft.CSharp` reference that the resulting dynamic dispatch needs.
+- References RhinoCommon 7.28 (Rhino 7). It also loads in Rhino 8 on Windows (fallback if IFC export misbehaves there: `SetDotNetRuntime` > NETFramework), never on Rhino 8 for Mac. Full assessment and the stale-installer situation: `docs/rhino8-compat.md`. The Rhino 8 modernization plan is tracked in issue #3.
 - There are no tests and no linting.
 
 ## Architecture
@@ -36,7 +36,7 @@ Everything flows through one WPF window driven by button clicks, with static glo
 
 **UI plumbing**: `UIMethods.cs` (~1400 lines) builds all result tables as WPF grids in code. Table row toggle buttons sync selection with the Rhino viewport through the static `RhinoDoc.SelectObjects`/`DeselectObjects` events (subscribed in `StartCheckup_Clicked`, never unsubscribed — reopening the window stacks handlers).
 
-**Dormant code**: all MySQL paths (`MySqlMethods.cs`, `Send_To_MySql`), save/load of calculated data, and the "Exterior" checkup branch are commented out or empty.
+**Dormant code**: save/load of calculated data and the "Exterior" checkup branch are commented out or empty. The old in-plugin MySQL export (`MySqlMethods.cs`, `Send_To_MySql`) was removed in issue #3 Phase 1 — MySQL ingestion lives in `Turner_Seattle_VDC_Server`; if it is ever revived in the plugin, use MySqlConnector rather than MySql.Data.
 
 ## Conventions and gotchas
 

@@ -11,8 +11,6 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Threading;
 using System.Windows.Threading;
-using MySql.Data.MySqlClient;
-using Microsoft.VisualBasic;
 using Xbim.Ifc;
 using Xbim.Ifc4.ProductExtension;
 using System.Windows.Media;
@@ -1141,47 +1139,6 @@ namespace QTO_Tool
                 //}
             }
         }
-
-        //------------------------------------SQL------------------------------------
-
-        //private void Send_To_MySql(object sender, RoutedEventArgs e)
-        //{
-        //    string connStr = @"server=172.18.30.54;userid=TurnerUser;password=VDCTurner2021";
-
-        //    MySqlConnection conn = null;
-
-        //    try
-        //    {
-        //        string mySqlTableName = Interaction.InputBox("Please enter project's name.", "MYSQL", RunQTO.doc.Name.Replace(".3dm", "")).Replace('-', '_');
-
-        //        if (mySqlTableName == string.Empty)
-        //        {
-        //            throw new ArgumentException("Project name has to be selected.", "mySqlProjectName");
-        //        }
-
-        //        string mySqlProjectName = "concrete_" + mySqlTableName;
-
-        //        conn = new MySqlConnection(connStr);
-        //        conn.Open();
-
-        //        MySqlMethods.CreateMySqlDatabase(mySqlProjectName, conn);
-
-        //        MySqlMethods.CreateMySqlTable(mySqlProjectName, mySqlTableName, this.DissipatedConcreteTablePanel, conn);
-
-        //        MessageBox.Show("Successful!");
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        MessageBox.Show(ex.ToString());
-        //    }
-        //    finally
-        //    {
-        //        if (conn != null)
-        //        {
-        //            conn.Close();
-        //        }
-        //    }
-        //}
 
         private void Blockify_Clicked(object sender, RoutedEventArgs e)
         {

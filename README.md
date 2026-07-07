@@ -19,9 +19,10 @@ A Rhino plugin for concrete quantity takeoff (QTO). It validates the solid geome
 
 ## Installation
 
-1. Download `QTO_Tool.zip` from the latest [GitHub Release](../../releases) (or build from source, see below) and unzip it. Keep `QTO_Tool.rhp` next to its accompanying `.dll` files — the plugin loads its IFC and Excel libraries from the same folder.
-2. In Rhino, open `Options` > `Plug-ins` > `Install...` and select `QTO_Tool.rhp` (or drag and drop the `.rhp` into the Rhino viewport).
-3. Restart Rhino and run the `RunQTO` command.
+1. Download `QTO_Tool.zip` from the latest [GitHub Release](../../releases) (or build from source, see below).
+2. Unzip the **entire archive** into a permanent folder of your choice (e.g. `Documents\QTO_Tool`). The zip contains `QTO_Tool.rhp` plus the `.dll` libraries it needs at runtime — the plugin loads its IFC and Excel libraries from its own folder, so all files must stay together and the `.rhp` must never be moved on its own.
+3. In Rhino, open `Options` > `Plug-ins` > `Install...` and select `QTO_Tool.rhp` (or drag and drop the `.rhp` into the Rhino viewport).
+4. Restart Rhino and run the `RunQTO` command. Rhino remembers the plugin's location — if you later move or delete the folder, repeat the install step from the new location.
 
 ## Usage
 
@@ -44,9 +45,9 @@ A Rhino plugin for concrete quantity takeoff (QTO). It validates the solid geome
 
 ## Building from source
 
-1. Open `QTO_Tool.sln` in Visual Studio on Windows (the plugin project targets .NET Framework 4.8.1 and uses `packages.config` — restore NuGet packages on first build).
-2. Build the `QTO_Tool` project. The post-build step renames the output assembly to `QTO_Tool.rhp` in `QTO_Tool\bin\`.
-3. Load `QTO_Tool\bin\QTO_Tool.rhp` in Rhino as described under Installation.
+1. On Windows, with any .NET 8+ SDK installed, run `dotnet build QTO_Tool\QTO_Tool.csproj -c Release` (or open `QTO_Tool.sln` in Visual Studio — the plugin project is SDK-style, targets .NET Framework 4.8, and restores its NuGet packages automatically).
+2. The build names the output assembly `QTO_Tool.rhp` directly, in `QTO_Tool\bin\Release\net48\`.
+3. Load `QTO_Tool\bin\Release\net48\QTO_Tool.rhp` in Rhino as described under Installation.
 
 The solution contains a second project, `Turner_Seattle_VDC_Server`, a standalone WPF utility for pushing QTO Excel output into a MySQL database. It is not required by, and not referenced from, the plugin.
 
@@ -60,4 +61,4 @@ To publish a release:
 2. Tag the commit and push the tag: `git tag vX.Y.Z && git push --tags`.
 3. CI builds the tag and automatically creates a GitHub release with `QTO_Tool.zip` attached.
 
-For a manual build instead: build the `QTO_Tool` project in `Release` configuration on Windows and zip the contents of `QTO_Tool\bin\` (excluding `.pdb` files).
+For a manual build instead: build the `QTO_Tool` project in `Release` configuration on Windows and zip the contents of `QTO_Tool\bin\Release\net48\` (excluding `.pdb` files).

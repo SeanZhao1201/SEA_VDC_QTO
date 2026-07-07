@@ -358,7 +358,7 @@ namespace QTO_Tool
 
                 if (mergedBoundary.Degree == 1)
                 {
-                    mergedBoundary = mergedBoundary.Simplify(CurveSimplifyOptions.All, RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians);
+                    mergedBoundary = mergedBoundary.Simplify(CurveSimplifyOptions.All, RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians) ?? mergedBoundary;
                 }
 
                 Curve[] mergedBoundarySegments = mergedBoundary.DuplicateSegments();
@@ -465,11 +465,11 @@ namespace QTO_Tool
 
                     if (Rhino.Geometry.AreaMassProperties.Compute(curveOffset1, RunQTO.doc.ModelAbsoluteTolerance).Area < Rhino.Geometry.AreaMassProperties.Compute(curveOffset2, RunQTO.doc.ModelAbsoluteTolerance).Area)
                     {
-                        mergedBoundaryOffset = curveOffset1.Simplify(CurveSimplifyOptions.All, RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians);
+                        mergedBoundaryOffset = curveOffset1.Simplify(CurveSimplifyOptions.All, RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians) ?? curveOffset1;
                     }
                     else
                     {
-                        mergedBoundaryOffset = curveOffset2.Simplify(CurveSimplifyOptions.All, RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians);
+                        mergedBoundaryOffset = curveOffset2.Simplify(CurveSimplifyOptions.All, RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians) ?? curveOffset2;
                     }
 
                     double t0 = mergedBoundaryOffset.Domain.Min;

@@ -16,7 +16,6 @@ A Rhino plugin for concrete quantity takeoff (QTO). It validates the solid geome
 - Windows. The plugin UI is WPF and the Excel export uses COM automation, so it cannot run on Rhino for Mac.
 - Rhino 7 (the plugin is compiled against RhinoCommon 7.x). It also loads in Rhino 8 for Windows; if the IFC export misbehaves under Rhino 8's default .NET Core runtime, run the `SetDotNetRuntime` command, choose `NETFramework`, and restart Rhino.
 - Desktop Microsoft Excel, for the Excel export only.
-- A `C:\Temp` folder must exist for the Excel export (the bundled workbook template is staged there).
 
 ## Installation
 

@@ -138,7 +138,11 @@ namespace QTO_Tool
 
             if (this.ConcreteIsIncluded.IsChecked == true)
             {
+                Logger.Info("Checkup started.");
+
                 this.CheckupResults.Content = Methods.ConcreteModelSetup();
+
+                Logger.Info("Checkup finished: " + this.CheckupResults.Content.ToString().Replace(Environment.NewLine, " | "));
 
                 this.CheckupResults.Visibility = Visibility.Visible;
 
@@ -285,6 +289,8 @@ namespace QTO_Tool
 
             double angleThreshold = Methods.CalculateAngleThreshold(this.AngleThresholdSlider.Value);
 
+            Logger.Info("Calculate started. Angle threshold: " + angleThreshold + " | Floors defined: " + ElevationInput.floorElevations.Count);
+
             try
             {
                 for (int i = 0; i < RunQTO.doc.Layers.Count; i++)
@@ -294,21 +300,36 @@ namespace QTO_Tool
                         selectedConcreteTemplate = LogicalTreeHelper.FindLogicalNode(this.ConcreteTemplateGrid,
                             "ConcreteTemplates_" + i.ToString()) as ComboBox;
 
+                        // Layers without a template row (no objects on them, e.g. level
+                        // grouping layers) take no part in the calculation.
+                        if (selectedConcreteTemplate == null)
+                        {
+                            Logger.Info("Calculate: skipping layer without a template row: " + RunQTO.doc.Layers[i].FullPath);
+
+                            continue;
+                        }
+
                         selectedTemplate = selectedConcreteTemplate.SelectedItem.ToString().Split(':').Last().Replace(" ", string.Empty);
 
                         layerName = RunQTO.doc.Layers[i].Name;
 
                         layerColor = RunQTO.doc.Layers[i].Color;
 
+                        // Short layer names can repeat under different parent layers,
+                        // so dictionary keys use the unique full path.
+                        string layerPath = RunQTO.doc.Layers[i].FullPath;
+
                         if (layerName.Split('_').Length >= 2)
                         {
-                            this.selectedConcreteTemplatesForLayers.Add(layerName, selectedTemplate);
+                            this.selectedConcreteTemplatesForLayers.Add(layerPath, selectedTemplate);
+
+                            Logger.Info("Calculate: layer '" + layerPath + "' -> template '" + selectedTemplate + "'");
 
                             layerTemplates = new Dictionary<string, List<object>>();
 
                             if (selectedTemplate == "Beam")
                             {
-                                rhobjs = RunQTO.doc.Objects.FindByLayer(layerName);
+                                rhobjs = RunQTO.doc.Objects.FindByLayer(RunQTO.doc.Layers[i]);
 
                                 for (int j = 0; j < rhobjs.Length; j++)
                                 {
@@ -355,6 +376,7 @@ namespace QTO_Tool
                                     catch (Exception ex)
                                     {
                                         badGeometryCount++;
+                                        Logger.Error("Calculate: object " + rhobj.Id + " on layer '" + layerName + "' failed as '" + selectedTemplate + "'.", ex);
                                         Methods.HighlightBadGeometry(rhobj);
                                     }
                                 }
@@ -365,7 +387,7 @@ namespace QTO_Tool
 
                             if (selectedTemplate == "Column")
                             {
-                                rhobjs = RunQTO.doc.Objects.FindByLayer(layerName);
+                                rhobjs = RunQTO.doc.Objects.FindByLayer(RunQTO.doc.Layers[i]);
 
                                 for (int j = 0; j < rhobjs.Length; j++)
                                 {
@@ -395,9 +417,10 @@ namespace QTO_Tool
                                             layerTemplates[layernameAndFloorName].Add(column);
                                         }
                                     }
-                                    catch
+                                    catch (Exception ex)
                                     {
                                         badGeometryCount++;
+                                        Logger.Error("Calculate: object " + rhobj.Id + " on layer '" + layerName + "' failed as '" + selectedTemplate + "'.", ex);
                                         Methods.HighlightBadGeometry(rhobj);
                                     }
                                 }
@@ -407,7 +430,7 @@ namespace QTO_Tool
 
                             if (selectedTemplate.Contains("Non-Rectangular"))
                             {
-                                rhobjs = RunQTO.doc.Objects.FindByLayer(layerName);
+                                rhobjs = RunQTO.doc.Objects.FindByLayer(RunQTO.doc.Layers[i]);
 
                                 for (int j = 0; j < rhobjs.Length; j++)
                                 {
@@ -437,9 +460,10 @@ namespace QTO_Tool
                                             layerTemplates[layernameAndFloorName].Add(column);
                                         }
                                     }
-                                    catch
+                                    catch (Exception ex)
                                     {
                                         badGeometryCount++;
+                                        Logger.Error("Calculate: object " + rhobj.Id + " on layer '" + layerName + "' failed as '" + selectedTemplate + "'.", ex);
                                         Methods.HighlightBadGeometry(rhobj);
                                     }
                                 }
@@ -449,7 +473,7 @@ namespace QTO_Tool
 
                             if (selectedTemplate == "ContinuousFooting")
                             {
-                                rhobjs = RunQTO.doc.Objects.FindByLayer(layerName);
+                                rhobjs = RunQTO.doc.Objects.FindByLayer(RunQTO.doc.Layers[i]);
 
                                 for (int j = 0; j < rhobjs.Length; j++)
                                 {
@@ -479,9 +503,10 @@ namespace QTO_Tool
                                             layerTemplates[layernameAndFloorName].Add(continuousFooting);
                                         }
                                     }
-                                    catch
+                                    catch (Exception ex)
                                     {
                                         badGeometryCount++;
+                                        Logger.Error("Calculate: object " + rhobj.Id + " on layer '" + layerName + "' failed as '" + selectedTemplate + "'.", ex);
                                         Methods.HighlightBadGeometry(rhobj);
                                     }
                                 }
@@ -492,7 +517,7 @@ namespace QTO_Tool
 
                             if (selectedTemplate == "Curb")
                             {
-                                rhobjs = RunQTO.doc.Objects.FindByLayer(layerName);
+                                rhobjs = RunQTO.doc.Objects.FindByLayer(RunQTO.doc.Layers[i]);
 
                                 for (int j = 0; j < rhobjs.Length; j++)
                                 {
@@ -522,9 +547,10 @@ namespace QTO_Tool
                                             layerTemplates[layernameAndFloorName].Add(curb);
                                         }
                                     }
-                                    catch
+                                    catch (Exception ex)
                                     {
                                         badGeometryCount++;
+                                        Logger.Error("Calculate: object " + rhobj.Id + " on layer '" + layerName + "' failed as '" + selectedTemplate + "'.", ex);
                                         Methods.HighlightBadGeometry(rhobj);
                                     }
                                 }
@@ -535,7 +561,7 @@ namespace QTO_Tool
 
                             if (selectedTemplate == "Footing")
                             {
-                                rhobjs = RunQTO.doc.Objects.FindByLayer(layerName);
+                                rhobjs = RunQTO.doc.Objects.FindByLayer(RunQTO.doc.Layers[i]);
 
                                 for (int j = 0; j < rhobjs.Length; j++)
                                 {
@@ -565,9 +591,10 @@ namespace QTO_Tool
                                             layerTemplates[layernameAndFloorName].Add(footing);
                                         }
                                     }
-                                    catch
+                                    catch (Exception ex)
                                     {
                                         badGeometryCount++;
+                                        Logger.Error("Calculate: object " + rhobj.Id + " on layer '" + layerName + "' failed as '" + selectedTemplate + "'.", ex);
                                         Methods.HighlightBadGeometry(rhobj);
                                     }
                                 }
@@ -577,7 +604,7 @@ namespace QTO_Tool
 
                             if (selectedTemplate == "Wall")
                             {
-                                rhobjs = RunQTO.doc.Objects.FindByLayer(layerName);
+                                rhobjs = RunQTO.doc.Objects.FindByLayer(RunQTO.doc.Layers[i]);
 
                                 for (int j = 0; j < rhobjs.Length; j++)
                                 {
@@ -607,9 +634,10 @@ namespace QTO_Tool
                                             layerTemplates[layernameAndFloorName].Add(wall);
                                         }
                                     }
-                                    catch
+                                    catch (Exception ex)
                                     {
                                         badGeometryCount++;
+                                        Logger.Error("Calculate: object " + rhobj.Id + " on layer '" + layerName + "' failed as '" + selectedTemplate + "'.", ex);
                                         Methods.HighlightBadGeometry(rhobj);
                                     }
                                 }
@@ -620,7 +648,7 @@ namespace QTO_Tool
 
                             if (selectedTemplate == "Slab")
                             {
-                                rhobjs = RunQTO.doc.Objects.FindByLayer(layerName);
+                                rhobjs = RunQTO.doc.Objects.FindByLayer(RunQTO.doc.Layers[i]);
 
                                 for (int j = 0; j < rhobjs.Length; j++)
                                 {
@@ -663,9 +691,10 @@ namespace QTO_Tool
                                             }
                                         }
                                     }
-                                    catch
+                                    catch (Exception ex)
                                     {
                                         badGeometryCount++;
+                                        Logger.Error("Calculate: object " + rhobj.Id + " on layer '" + layerName + "' failed as '" + selectedTemplate + "'.", ex);
                                         Methods.HighlightBadGeometry(rhobj);
                                     }
                                 }
@@ -675,7 +704,7 @@ namespace QTO_Tool
 
                             if (selectedTemplate == "Styrofoam")
                             {
-                                rhobjs = RunQTO.doc.Objects.FindByLayer(layerName);
+                                rhobjs = RunQTO.doc.Objects.FindByLayer(RunQTO.doc.Layers[i]);
 
                                 for (int j = 0; j < rhobjs.Length; j++)
                                 {
@@ -705,9 +734,10 @@ namespace QTO_Tool
                                             layerTemplates[layernameAndFloorName].Add(styrofoam);
                                         }
                                     }
-                                    catch
+                                    catch (Exception ex)
                                     {
                                         badGeometryCount++;
+                                        Logger.Error("Calculate: object " + rhobj.Id + " on layer '" + layerName + "' failed as '" + selectedTemplate + "'.", ex);
                                         Methods.HighlightBadGeometry(rhobj);
                                     }
                                 }
@@ -717,7 +747,7 @@ namespace QTO_Tool
 
                             if (selectedTemplate == "Stair")
                             {
-                                rhobjs = RunQTO.doc.Objects.FindByLayer(layerName);
+                                rhobjs = RunQTO.doc.Objects.FindByLayer(RunQTO.doc.Layers[i]);
 
                                 for (int j = 0; j < rhobjs.Length; j++)
                                 {
@@ -747,9 +777,10 @@ namespace QTO_Tool
                                             layerTemplates[layernameAndFloorName].Add(stair);
                                         }
                                     }
-                                    catch
+                                    catch (Exception ex)
                                     {
                                         badGeometryCount++;
+                                        Logger.Error("Calculate: object " + rhobj.Id + " on layer '" + layerName + "' failed as '" + selectedTemplate + "'.", ex);
                                         Methods.HighlightBadGeometry(rhobj);
                                     }
                                 }
@@ -859,7 +890,9 @@ namespace QTO_Tool
             {
                 Dispatcher.FromThread(newWindowThread).InvokeShutdown();
 
-                MessageBox.Show("Something went wrong!");
+                Logger.Error("Calculate failed.", ex);
+
+                MessageBox.Show("Something went wrong! Log file: " + Logger.LogFilePath);
 
                 MessageBox.Show(ex.ToString());
             }
@@ -868,6 +901,8 @@ namespace QTO_Tool
 
             // Format and display the TimeSpan value
             string calculationTime = ts.TotalSeconds.ToString("F6");
+
+            Logger.Info("Calculate finished in " + calculationTime + " s.");
 
             MessageBox.Show("Calculation process completed in: " + calculationTime + " seconds!");
         }
@@ -988,7 +1023,20 @@ namespace QTO_Tool
 
         private void Export_Excel_Clicked(object sender, RoutedEventArgs e)
         {
-            ExcelMethods.ExportExcel(this.DissipatedConcreteTablePanel, this.layerPropertyColumnHeaders);
+            try
+            {
+                Logger.Info("Excel export started.");
+
+                ExcelMethods.ExportExcel(this.DissipatedConcreteTablePanel, this.layerPropertyColumnHeaders);
+
+                Logger.Info("Excel export finished.");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Excel export failed.", ex);
+
+                MessageBox.Show("Excel export failed! Log file: " + Logger.LogFilePath + Environment.NewLine + Environment.NewLine + ex.ToString());
+            }
         }
 
         private void Combined_Values_Toggle_Clicked(object sender, RoutedEventArgs e)
@@ -1151,6 +1199,8 @@ namespace QTO_Tool
                 {
                     string outputPath = saveFileDialog.FileName;
 
+                    Logger.Info("IFC export started: " + outputPath);
+
                     IfcStore project = IFCMethods.CreateandInitIFCModel(RunQTO.doc.Path.Replace(".3dm", ""));
 
                     IfcBuilding building = IFCMethods.CreateBuilding(project, "Concrete Building");
@@ -1173,12 +1223,18 @@ namespace QTO_Tool
                     Dictionary<string, IfcBuildingStorey> storeysByFloorName = IFCMethods.CreateBuildingStoreys(
                         project, building, ElevationInput.floorElevations, floorNamesInUse);
 
+                    Logger.Info("IFC export: " + storeysByFloorName.Count + " storeys created for floor buckets: " + String.Join(", ", storeysByFloorName.Keys));
+
                     foreach (AllTemplates templateContainer in templateContainers)
                     {
                         IFCMethods.CreateAndAddIFCElement(project, storeysByFloorName, templateContainer);
+
+                        Logger.Info("IFC export: added container " + templateContainer.GetType().Name);
                     }
 
                     project.SaveAs(outputPath);
+
+                    Logger.Info("IFC export finished: " + outputPath);
 
                     MessageBox.Show("Export was successful.");
 
@@ -1191,7 +1247,9 @@ namespace QTO_Tool
             }
             catch (Exception ex)
             {
-                MessageBox.Show(ex.ToString());
+                Logger.Error("IFC export failed.", ex);
+
+                MessageBox.Show("IFC export failed! Log file: " + Logger.LogFilePath + Environment.NewLine + Environment.NewLine + ex.ToString());
             }
 
         }

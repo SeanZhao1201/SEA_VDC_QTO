@@ -32,7 +32,7 @@ Everything flows through one WPF window driven by button clicks, with static glo
 
 **IFC export** (`IFCMethods.cs`, xBIM 5.1): builds an in-memory **IFC4-only** model with the spatial hierarchy `IfcProject` → `IfcSite` → `IfcBuilding` → one `IfcBuildingStorey` per floor (from `ElevationInput.floorElevations`, elevations in millimetres) plus an "Unassigned" fallback storey for floor buckets without an elevation entry. Quantities go into a `"QTO Properties"` pset, Rhino attribute user strings into `"QTO Attributes"`. Geometry is tessellated `IfcFaceBasedSurfaceModel` meshes in absolute world coordinates, converted with one `RhinoMath.UnitScale` factor shared with the storey elevations. Design details (hierarchy rules, duplicate/stale floor names, placement strategy, xBIM API notes): `docs/ifc-export.md`.
 
-**Excel export** (`ExcelMethods.cs`): desktop Excel COM automation. Writes the embedded workbook template to `c:\Temp\QTO_Template.xlsx` (the folder must exist), fills a summary sheet and a per-element sheet, saves via dialog.
+**Excel export** (`ExcelMethods.cs`): desktop Excel COM automation. Writes the embedded workbook template to `QTO_Template.xlsx` in the user temp folder (`Path.GetTempPath()`), fills a summary sheet and a per-element sheet, saves via dialog.
 
 **UI plumbing**: `UIMethods.cs` (~1400 lines) builds all result tables as WPF grids in code. Table row toggle buttons sync selection with the Rhino viewport through the static `RhinoDoc.SelectObjects`/`DeselectObjects` events (subscribed in `StartCheckup_Clicked`, never unsubscribed — reopening the window stacks handlers).
 

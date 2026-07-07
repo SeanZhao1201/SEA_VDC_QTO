@@ -54,18 +54,21 @@ namespace QTO_Tool
                 try
                 {
                     ExcelMethods.PrepareExel(layerBasedConcreteTable, outputPath, layerPropertyColumnHeaders, excel);
+
+                    Dispatcher.FromThread(newWindowThread).InvokeShutdown();
+
+                    MessageBox.Show("Export was successful.");
                 }
 
-                catch (Exception ex)
+                catch (Exception)
                 {
                     excel.Quit();
-                    MessageBox.Show(ex.ToString());
+
+                    Dispatcher.FromThread(newWindowThread).InvokeShutdown();
+
+                    // The caller logs the failure and reports the log file path.
+                    throw;
                 }
-
-
-                Dispatcher.FromThread(newWindowThread).InvokeShutdown();
-
-                MessageBox.Show("Export was successful.");
             }
 
             else
@@ -84,7 +87,7 @@ namespace QTO_Tool
                 List<string> projectSheetHeaders = new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "NET VOLUME", "BOTTOM AREA", "OPENING AREA",
                 "TOP AREA", "SIDE AREA", "END AREA", "SIDE-1", "SIDE-2", "EDGE AREA", "TREAD AREA", "RISER AREA", "TREAD COUNT", "LENGTH", "HEIGHT", "PERIMETER", "OPENING PERIMETER" };
 
-                string tempExcelTemplate = @"c:\Temp\QTO_Template.xlsx";
+                string tempExcelTemplate = Path.Combine(Path.GetTempPath(), "QTO_Template.xlsx");
 
                 File.WriteAllBytes(tempExcelTemplate, Resources.template);
 
@@ -394,9 +397,10 @@ namespace QTO_Tool
                 workBook.Close();
                 excel.Quit();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                MessageBox.Show(ex.ToString());
+                // Bubble up so ExportExcel can close Excel and the caller can log it.
+                throw;
             }
         }
 

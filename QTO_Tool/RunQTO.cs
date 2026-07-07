@@ -50,6 +50,9 @@ namespace QTO_Tool
             // Always get the Actice model
             RunQTO.doc = RhinoDoc.ActiveDoc;
 
+            Logger.StartSession();
+            Logger.Info("Document: " + RunQTO.doc.Path + " | Units: " + RunQTO.doc.GetUnitSystemName(true, true, true, true));
+
             RunQTO.volumeConversionFactor = Methods.SetVolumeConversionFactor(RunQTO.doc.GetUnitSystemName(true, true, true, true));
 
             //try closing a window if it's already up

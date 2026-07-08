@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace QTO_Tool
 {
-    class AllContinousFootings : AllTemplates 
+    class AllContinuousFootings : AllTemplates
     {
     }
 }

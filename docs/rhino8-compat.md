@@ -1,6 +1,6 @@
 # Rhino 8 compatibility assessment
 
-Status of running this Rhino 7 plugin on Rhino 8, based on a full audit of the code, dependencies, and installer (2026-07). Summary: **works on Rhino 8 for Windows as-is; impossible on Rhino 8 for Mac; the shipped installer is stale and version-locked to a Rhino 6 path.**
+Status of running this Rhino 7 plugin on Rhino 8, based on a full audit of the code, dependencies, and installer (2026-07). Summary: **works on Rhino 8 for Windows as-is; impossible on Rhino 8 for Mac.**
 
 ## Code
 
@@ -20,18 +20,12 @@ Status of running this Rhino 7 plugin on Rhino 8, based on a full audit of the c
 
 Hard no, in any configuration: Rhino 8 Mac is Core-only (no netfx fallback), and the plugin depends on WPF, WinForms dialogs, Excel COM, and hardcoded Windows paths — none of which exist on Mac. Mac support would mean a rewrite of the UI (Eto.Forms) and the Excel export.
 
-## Installer (`QTO_Tool_Setup/`)
+## Installer
 
-The checked-in `QTO_Tool_Setup.exe` (Inno Setup 6.1.0, no source in the repo) is stale on every axis:
-
-- Copies files to a hard-coded `C:\Program Files\Rhino 6\Plug-ins\QTO_Tool` — a folder no Rhino version scans.
-- Writes **zero** registry keys (no McNeel plugin registration for any Rhino version); its own post-install text tells the user to load the plugin manually via Options > Plug-ins.
-- The bundled `QTO_Tool.rhp` inside it was compiled against RhinoCommon **6.34** (net452) — two generations older than the current source.
-
-Practical installation is therefore always the manual one described in the README. Replace this installer with a [yak package](https://developer.rhino3d.com/guides/yak/) when distribution matters.
+The formerly checked-in `QTO_Tool_Setup.exe` (Inno Setup, no source, stale on every axis — hard-coded `C:\Program Files\Rhino 6\Plug-ins\` target and a bundled RhinoCommon 6.34 build of the .rhp) was removed from the repo in July 2026 and survives only in git history. Installation is the manual route described in the README (GitHub Release zip); build a [yak package](https://developer.rhino3d.com/guides/yak/) when distribution matters.
 
 ## Path to first-class Rhino 8 support
 
-The full plan is tracked in [issue #3](https://github.com/SeanZhao1201/SEA_VDC_QTO/issues/3). Phase 1 is **done** (July 2026): the csproj is SDK-style with `PackageReference`, the dead MySQL chain and unused references (BouncyCastle, Google.Protobuf, K4os.*, Extended.Wpf.Toolkit, Xbim.IO.Esent, Xbim.Tessellator) are gone, and `app.config` with its binding redirects is deleted. Remaining, per McNeel's recommended route: multi-target `net48;net7.0-windows` with the RhinoCommon 8 NuGet (multi-targeted distribution is supported since Rhino 8.2), upgrade xBIM to 6.x, and replace the stale installer with a yak package (issue #3 Phases 2–4). Keep in mind the project can only be compiled on Windows.
+The full plan is tracked in [issue #3](https://github.com/SeanZhao1201/SEA_VDC_QTO/issues/3). Phase 1 is **done** (July 2026): the csproj is SDK-style with `PackageReference`, the dead MySQL chain and unused references (BouncyCastle, Google.Protobuf, K4os.*, Extended.Wpf.Toolkit, Xbim.IO.Esent, Xbim.Tessellator) are gone, and `app.config` with its binding redirects is deleted. Remaining, per McNeel's recommended route: multi-target `net48;net7.0-windows` with the RhinoCommon 8 NuGet (multi-targeted distribution is supported since Rhino 8.2), upgrade xBIM to 6.x, and ship a yak package for distribution (issue #3 Phases 2–4). Keep in mind the project can only be compiled on Windows.
 
 Key sources: [Moving to .NET Core](https://developer.rhino3d.com/guides/rhinocommon/moving-to-dotnet-core/) · [.NET Core in Rhino 8](https://www.rhino3d.com/en/docs/guides/netcore/) · [Rhino 8: Get ready for .NET 7 (forum)](https://discourse.mcneel.com/t/rhino-8-feature-get-ready-for-net-7/148051)

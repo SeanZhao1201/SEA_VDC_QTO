@@ -28,7 +28,7 @@ namespace QTO_Tool
 
         AllBeams allBeams = new AllBeams();
         AllColumns allColumns = new AllColumns();
-        AllContinousFootings allContinuousFootings = new AllContinousFootings();
+        AllContinuousFootings allContinuousFootings = new AllContinuousFootings();
         AllCurbs allCurbs = new AllCurbs();
         AllFootings allFootings = new AllFootings();
         AllSlabs allSlabs = new AllSlabs();

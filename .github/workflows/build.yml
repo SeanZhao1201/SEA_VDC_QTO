@@ -19,6 +19,9 @@ jobs:
       - name: Build plugin
         run: dotnet build QTO_Tool\QTO_Tool.csproj -c Release
 
+      - name: Build Turner_Seattle_VDC_Server
+        run: dotnet build Turner_Seattle_VDC_Server\Turner_Seattle_VDC_Server.csproj -c Release
+
       - name: Stage plugin files
         shell: pwsh
         run: |

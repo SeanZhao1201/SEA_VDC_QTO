@@ -2,6 +2,8 @@
 
 A Rhino plugin for concrete quantity takeoff (QTO). It validates the solid geometry in a Rhino model, computes per-element quantities (volumes, face areas, lengths, counts) directly from Breps, groups elements by floor, and exports the results to Excel and IFC.
 
+This repository (`SEA_VDC_QTO`, from the Seattle VDC quantity-takeoff collaboration with Turner Construction) contains two independent tools: **QTO_Tool**, the Rhino plugin this README describes, and **Turner_Seattle_VDC_Server**, a standalone WPF utility that loads the plugin's Excel output into a MySQL database. The two share no code — only the Excel file format connects them.
+
 ## Features
 
 - **Model checkup** — scans every object in the document, joins and heals surfaces into solids, and highlights bad geometry in red before any quantities are computed.
@@ -62,3 +64,7 @@ To publish a release:
 3. CI builds the tag and automatically creates a GitHub release with `QTO_Tool.zip` attached.
 
 For a manual build instead: build the `QTO_Tool` project in `Release` configuration on Windows and zip the contents of `QTO_Tool\bin\Release\net48\` (excluding `.pdb` files).
+
+## License
+
+[MIT](LICENSE). Third-party libraries redistributed in the release zip (xBIM and its dependencies) remain under their own licenses.

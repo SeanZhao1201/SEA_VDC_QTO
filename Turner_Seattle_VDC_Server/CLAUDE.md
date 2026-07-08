@@ -6,4 +6,4 @@ Notes:
 
 - The MySQL connection string (server IP + credentials) is hardcoded in `MainWindow.xaml.cs`.
 - Uses Excel COM interop, so desktop Excel is required at runtime.
-- The plugin's own MySQL code paths (`QTO_Tool/MySqlMethods.cs`) are commented out; this app is the only live MySQL consumer in the solution.
+- The plugin's old MySQL export (`QTO_Tool/MySqlMethods.cs`) was removed outright in issue #3 Phase 1; this app is the only MySQL consumer in the solution. If MySQL is ever revived in the plugin, use MySqlConnector rather than MySql.Data.

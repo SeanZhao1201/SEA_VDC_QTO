@@ -138,7 +138,44 @@ namespace QTO_Tool
             {
                 Logger.Info("Checkup started.");
 
-                this.CheckupResults.Content = Methods.ConcreteModelSetup();
+                try
+                {
+                    this.CheckupResults.Content = Methods.ConcreteModelSetup();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error("Checkup failed with an unhandled exception.", ex);
+
+                    this.CheckupResults.Content = "Checkup failed: " + ex.Message + Environment.NewLine +
+                        "Details were written to the log: " + (Logger.LogFilePath ?? "<log unavailable>");
+                    this.CheckupResults.Visibility = Visibility.Visible;
+
+                    // The model may be half-processed and any result tables from a
+                    // previous run reference deleted object ids (their row toggles
+                    // would throw). Clear them and require a successful checkup
+                    // before calculating or exporting again.
+                    this.ConcreteTemplateGrid.Children.Clear();
+                    this.ConcreteTemplateGrid.RowDefinitions.Clear();
+                    this.DissipatedConcreteTablePanel.Children.Clear();
+
+                    this.CalculateQuantitiesButton.IsEnabled = false;
+                    this.ExportExcelButton.IsEnabled = false;
+                    this.ConcreteSaveButton.IsEnabled = false;
+                    this.Blockify.IsEnabled = false;
+
+                    this.allSelectedTemplates.Clear();
+                    this.allSelectedTemplateValues.Clear();
+                    this.selectedConcreteTemplatesForLayers.Clear();
+
+                    MessageBox.Show("The model checkup failed with an error." + Environment.NewLine + Environment.NewLine +
+                        ex.Message + Environment.NewLine + Environment.NewLine +
+                        "Details were written to the log file:" + Environment.NewLine +
+                        (Logger.LogFilePath ?? "<log unavailable>"));
+
+                    Dispatcher.FromThread(newWindowThread)?.InvokeShutdown();
+
+                    return;
+                }
 
                 Logger.Info("Checkup finished: " + this.CheckupResults.Content.ToString().Replace(Environment.NewLine, " | "));
 

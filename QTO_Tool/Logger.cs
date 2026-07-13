@@ -4,7 +4,10 @@ using System.IO;
 namespace QTO_Tool
 {
     /// <summary>
-    /// Session log written to %AppData%\QTO_Tool\Logs. One file per RunQTO session.
+    /// Session log, one file per RunQTO session. Written to a Logs subfolder next to
+    /// the plugin (QTO_Tool ships as a folder, so the logs travel with it and can be
+    /// sent along with bug reports); falls back to %AppData%\QTO_Tool\Logs when the
+    /// plugin folder is not writable.
     /// </summary>
     public static class Logger
     {
@@ -15,26 +18,77 @@ namespace QTO_Tool
         /// <summary>Starts a new session log file and announces its path on the Rhino command line.</summary>
         public static void StartSession()
         {
+            LogFilePath = null;
+
+            string fileName = "QTO_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss") + ".log";
+
+            foreach (string logDirectory in CandidateLogDirectories())
+            {
+                try
+                {
+                    Directory.CreateDirectory(logDirectory);
+
+                    string candidate = Path.Combine(logDirectory, fileName);
+
+                    // Probe writability now so a read-only install location falls
+                    // through to %AppData% instead of losing the whole session log.
+                    File.AppendAllText(candidate, string.Empty);
+
+                    LogFilePath = candidate;
+                    break;
+                }
+                catch
+                {
+                    // Try the next candidate; logging must never break the plugin.
+                }
+            }
+
+            if (LogFilePath == null)
+            {
+                return;
+            }
+
             try
             {
-                string logDirectory = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "QTO_Tool", "Logs");
-
-                Directory.CreateDirectory(logDirectory);
-
-                LogFilePath = Path.Combine(logDirectory,
-                    "QTO_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss") + ".log");
-
                 Info("QTO_Tool session started. Plugin version: " +
-                    typeof(Logger).Assembly.GetName().Version.ToString());
+                    typeof(Logger).Assembly.GetName().Version.ToString() +
+                    ". Rhino version: " + Rhino.RhinoApp.Version.ToString() + ".");
 
                 Rhino.RhinoApp.WriteLine("QTO_Tool log file: " + LogFilePath);
             }
             catch
             {
                 // Logging must never break the plugin.
-                LogFilePath = null;
             }
+        }
+
+        private static string[] CandidateLogDirectories()
+        {
+            string pluginLogDirectory = null;
+
+            try
+            {
+                string assemblyDirectory = Path.GetDirectoryName(typeof(Logger).Assembly.Location);
+
+                if (!string.IsNullOrEmpty(assemblyDirectory))
+                {
+                    pluginLogDirectory = Path.Combine(assemblyDirectory, "Logs");
+                }
+            }
+            catch
+            {
+                // Fall through to %AppData%.
+            }
+
+            string appDataLogDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "QTO_Tool", "Logs");
+
+            if (pluginLogDirectory == null)
+            {
+                return new[] { appDataLogDirectory };
+            }
+
+            return new[] { pluginLogDirectory, appDataLogDirectory };
         }
 
         public static void Info(string message)

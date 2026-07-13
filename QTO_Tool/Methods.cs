@@ -94,100 +94,237 @@ namespace QTO_Tool
         {
             string modelUnitSystem = "Model's current unit system is: " + RunQTO.doc.GetUnitSystemName(true, true, true, true);
             string modelAngleTolerance = "Model's current angle tolerance is: " + RunQTO.doc.ModelAngleToleranceDegrees.ToString();
-            string modelAbsoluteTolerance = "Model's current unit system is: " + RunQTO.doc.ModelAbsoluteTolerance.ToString();
+            string modelAbsoluteTolerance = "Model's current absolute tolerance is: " + RunQTO.doc.ModelAbsoluteTolerance.ToString();
 
             string examinationResult = "";
             int invalidObjCount = 0;
             int badGeometryCount = 0;
+            int skippedObjCount = 0;
 
-            List<Mesh> meshList = new List<Mesh>();
             List<Brep> surfaceList = new List<Brep>();
-
-            Dictionary<Brep, string> newBreps = new Dictionary<Brep, string>();
-            List<ObjectAttributes> newObjectAttributes = new List<ObjectAttributes>();
+            List<Guid> addedObjectIds = new List<Guid>();
+            List<CheckupBrep> joinedBreps = new List<CheckupBrep>();
 
             // The loop adds and deletes document objects, which invalidates a live
             // ObjectTable enumeration, so it iterates over a snapshot instead.
             List<RhinoObject> docObjects = RunQTO.doc.Objects.ToList();
 
             Logger.Info("Checkup: processing " + docObjects.Count + " objects (" +
-                docObjects.Count(o => o is InstanceObject) + " block instances).");
+                docObjects.Count(o => o is InstanceObject) + " block instances). Absolute tolerance: " +
+                RunQTO.doc.ModelAbsoluteTolerance + ", angle tolerance: " +
+                RunQTO.doc.ModelAngleToleranceDegrees + " degrees.");
 
             foreach (RhinoObject obj in docObjects)
             {
-                if (obj.IsValid)
+                surfaceList.Clear();
+                addedObjectIds.Clear();
+
+                try
                 {
-                    int blockLevel = 0;
+                    bool objectHandled = true;
 
-                    ObjectAttributes mainObjectAttributes = obj.Attributes;
-
-                    Methods.PrepareObject(obj, mainObjectAttributes, surfaceList, invalidObjCount, blockLevel);
-                }
-
-                else
-                {
-                    invalidObjCount++;
-                }
-
-                Brep[] tempBreps = Brep.JoinBreps(surfaceList, RunQTO.doc.ModelAbsoluteTolerance);
-
-                if (tempBreps != null)
-                {
-                    if (tempBreps.Length == 1 && tempBreps[0].IsSolid)
+                    if (obj.IsValid)
                     {
-                        newBreps.Add(tempBreps[0], "Good");
-                        newObjectAttributes.Add(obj.Attributes);
+                        objectHandled = Methods.PrepareObject(obj, obj.Attributes, surfaceList, addedObjectIds);
                     }
-
                     else
                     {
-                        for (int i = 0; i < tempBreps.Length; i++)
-                        {
-                            if (tempBreps[i].IsSolid)
-                            {
-                                newBreps.Add(tempBreps[i], "Good");
-                                newObjectAttributes.Add(obj.Attributes);
-                            }
+                        invalidObjCount++;
 
-                            else
-                            {
-                                newBreps.Add(tempBreps[i], "Bad");
-                                newObjectAttributes.Add(obj.Attributes);
-                            }
+                        Logger.Warn("Checkup: object " + obj.Id + " on layer '" + Methods.LayerPathOf(obj.Attributes) +
+                            "' is not valid; it will be removed from the model.");
+                    }
+
+                    if (!objectHandled)
+                    {
+                        // Geometry conversion failed; keep the original instead of silently dropping it.
+                        skippedObjCount++;
+                        Methods.RollbackAddedObjects(addedObjectIds);
+                        continue;
+                    }
+
+                    Brep[] tempBreps = Brep.JoinBreps(surfaceList, RunQTO.doc.ModelAbsoluteTolerance);
+
+                    // Build the staged entries before deleting, so nothing that can
+                    // throw runs between a successful delete and the staging.
+                    List<CheckupBrep> stagedBreps = new List<CheckupBrep>();
+
+                    if (tempBreps != null)
+                    {
+                        foreach (Brep tempBrep in tempBreps)
+                        {
+                            stagedBreps.Add(new CheckupBrep(tempBrep, obj));
                         }
                     }
-                }
 
-                surfaceList.Clear();
-                RunQTO.doc.Objects.Delete(obj);
-            }
-
-            if (newBreps.Count != 0)
-            {
-                foreach (Brep newBrep in newBreps.Keys)
-                {
-                    newBrep.MergeCoplanarFaces(RunQTO.doc.ModelAngleToleranceRadians);
-
-                    var mass_properties = VolumeMassProperties.Compute(newBrep);
-                    double volume_error_percentage = Math.Round((mass_properties.VolumeError / mass_properties.Volume) * 100, 3);
-
-                    if (volume_error_percentage <= 1 && newBreps[newBrep] == "Good")
+                    // Delete can fail (locked object, locked layer). Re-adding the rebuilt
+                    // copies next to an undeletable original would duplicate it in place,
+                    // so roll the copies back and leave the object untouched instead.
+                    if (RunQTO.doc.Objects.Delete(obj))
                     {
-                        RunQTO.doc.Objects.AddBrep(newBrep, newObjectAttributes[newBreps.Keys.ToList().IndexOf(newBrep)]);
+                        joinedBreps.AddRange(stagedBreps);
                     }
                     else
                     {
-                        badGeometryCount = Methods.BadGeometryDetected(newBrep, newObjectAttributes[newBreps.Keys.ToList().IndexOf(newBrep)], badGeometryCount);
+                        skippedObjCount++;
+                        Methods.RollbackAddedObjects(addedObjectIds);
+
+                        Logger.Warn("Checkup: could not delete object " + obj.Id + " on layer '" +
+                            Methods.LayerPathOf(obj.Attributes) + "' (locked object or locked layer?); it was left unchecked.");
                     }
+                }
+                catch (Exception ex)
+                {
+                    skippedObjCount++;
+                    Methods.RollbackAddedObjects(addedObjectIds);
+
+                    Logger.Error("Checkup: processing object " + obj.Id + " on layer '" +
+                        Methods.LayerPathOf(obj.Attributes) + "' failed; it was left unchecked.", ex);
+                }
+            }
+
+            foreach (CheckupBrep joinedBrep in joinedBreps)
+            {
+                try
+                {
+                    joinedBrep.Brep.MergeCoplanarFaces(RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians);
+
+                    // Compute returns null for degenerate geometry; treat that as bad
+                    // geometry instead of crashing after the originals are already gone.
+                    VolumeMassProperties massProperties = VolumeMassProperties.Compute(joinedBrep.Brep);
+
+                    double volumeErrorPercentage = double.NaN;
+
+                    // Volume != 0 (not > 0): an inward-oriented closed brep has a negative
+                    // volume and a negative error percentage, which the old code accepted
+                    // as good; only guard the null and divide-by-zero crash paths.
+                    if (massProperties != null && massProperties.Volume != 0)
+                    {
+                        volumeErrorPercentage = Math.Round((massProperties.VolumeError / massProperties.Volume) * 100, 3);
+                    }
+
+                    if (joinedBrep.IsSolid && volumeErrorPercentage <= 1)
+                    {
+                        Guid newObjectId = RunQTO.doc.Objects.AddBrep(joinedBrep.Brep, joinedBrep.Attributes);
+
+                        Logger.Info("Checkup: source object " + joinedBrep.SourceObjectId + " -> joined solid " +
+                            newObjectId + " on layer '" + joinedBrep.LayerPath + "', volume error " +
+                            volumeErrorPercentage + "%.");
+                    }
+                    else
+                    {
+                        badGeometryCount++;
+
+                        Guid newObjectId = Methods.AddBadGeometry(joinedBrep.Brep, joinedBrep.Attributes);
+
+                        Logger.Warn("Checkup: BAD geometry from source object " + joinedBrep.SourceObjectId + " -> " +
+                            newObjectId + " on layer '" + joinedBrep.LayerPath + "': " +
+                            (joinedBrep.IsSolid ? "" : "open shell with " + Methods.CountNakedEdges(joinedBrep.Brep) + " naked edges; ") +
+                            "volume error " + (double.IsNaN(volumeErrorPercentage) ? "not computable" : volumeErrorPercentage + "%") + ".");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    badGeometryCount++;
+
+                    Logger.Error("Checkup: could not classify joined brep from source object " +
+                        joinedBrep.SourceObjectId + " on layer '" + joinedBrep.LayerPath + "'; marked as bad.", ex);
+
+                    try { Methods.AddBadGeometry(joinedBrep.Brep, joinedBrep.Attributes); } catch { }
                 }
             }
 
             examinationResult = invalidObjCount.ToString() + " invalid objects exist in the model. \n";
             examinationResult += badGeometryCount.ToString() + " bad geometry objects exist in the model.";
 
+            if (skippedObjCount > 0)
+            {
+                examinationResult += "\n" + skippedObjCount.ToString() +
+                    " objects could not be processed (locked or failed) and were left unchanged, see log: " +
+                    (Logger.LogFilePath ?? "<log unavailable>");
+            }
+
+            Logger.Info("Checkup summary: " + invalidObjCount + " invalid, " + badGeometryCount + " bad, " +
+                skippedObjCount + " skipped, " + joinedBreps.Count + " joined breps, of " +
+                docObjects.Count + " objects.");
+
             RunQTO.doc.Views.Redraw();
 
             return String.Join(Environment.NewLine, examinationResult, modelUnitSystem, modelAngleTolerance, modelAbsoluteTolerance);
+        }
+
+        /// <summary>
+        /// A brep produced by the checkup join step, staged for classification, with
+        /// everything needed to re-add it and to name its source object in the log.
+        /// </summary>
+        private class CheckupBrep
+        {
+            public readonly Brep Brep;
+            public readonly bool IsSolid;
+            public readonly ObjectAttributes Attributes;
+            public readonly Guid SourceObjectId;
+            public readonly string LayerPath;
+
+            public CheckupBrep(Brep brep, RhinoObject sourceObject)
+            {
+                this.Brep = brep;
+                this.IsSolid = brep.IsSolid;
+                this.Attributes = sourceObject.Attributes;
+                this.SourceObjectId = sourceObject.Id;
+                this.LayerPath = Methods.LayerPathOf(sourceObject.Attributes);
+            }
+        }
+
+        static void RollbackAddedObjects(List<Guid> addedObjectIds)
+        {
+            foreach (Guid addedObjectId in addedObjectIds)
+            {
+                // The copies inherit the source object's mode and layer, so a
+                // mode-respecting delete would fail for exactly the locked objects
+                // that make this rollback necessary; ignoreModes forces it through.
+                RhinoObject addedObject = RunQTO.doc.Objects.FindId(addedObjectId);
+
+                if (addedObject == null)
+                {
+                    continue;
+                }
+
+                if (!RunQTO.doc.Objects.Delete(addedObject, true, true))
+                {
+                    Logger.Warn("Checkup: rollback could not delete copy " + addedObjectId +
+                        "; the model may contain a duplicate.");
+                }
+            }
+
+            addedObjectIds.Clear();
+        }
+
+        internal static string LayerPathOf(ObjectAttributes attributes)
+        {
+            try
+            {
+                Layer layer = RunQTO.doc.Layers.FindIndex(attributes.LayerIndex);
+                return layer == null ? "<unknown layer>" : layer.FullPath;
+            }
+            catch
+            {
+                return "<unknown layer>";
+            }
+        }
+
+        static int CountNakedEdges(Brep brep)
+        {
+            int count = 0;
+
+            foreach (BrepEdge edge in brep.Edges)
+            {
+                if (edge.Valence == EdgeAdjacency.Naked)
+                {
+                    count++;
+                }
+            }
+
+            return count;
         }
 
         //Concrete model preparations
@@ -203,7 +340,13 @@ namespace QTO_Tool
         }
 
         //Prepare BlockInstance
-        static void PrepareBlockInstance(RhinoObject inputObj, ObjectAttributes _mainObjectAttributes, List<Brep> _surfaceList, int _badGeometryCount, int _blockLevel)
+        /// <summary>
+        /// Returns false when a solid-type piece (brep/extrusion/mesh) could not be
+        /// converted, so the caller keeps the whole instance instead of deleting it
+        /// with pieces missing. Unsupported piece types (curves, points, ...) are
+        /// dropped, matching how top-level unsupported objects are handled.
+        /// </summary>
+        static bool PrepareBlockInstance(RhinoObject inputObj, ObjectAttributes _mainObjectAttributes, List<Brep> _surfaceList, List<Guid> _addedObjectIds)
         {
             InstanceObject instanceObj = (InstanceObject)inputObj;
 
@@ -229,19 +372,30 @@ namespace QTO_Tool
                 else if (pieceGeometry is Extrusion)
                 {
                     tempBrep = Brep.TryConvertBrep(pieceGeometry);
+
+                    if (tempBrep == null)
+                    {
+                        Logger.Warn("Checkup: extrusion piece " + i + " inside block instance " + inputObj.Id +
+                            " could not be converted to a brep; the whole instance was left unchecked.");
+
+                        return false;
+                    }
                 }
                 else if (pieceGeometry is Mesh)
                 {
                     tempBrep = Brep.CreateFromMesh((Mesh)pieceGeometry, true);
+
+                    if (tempBrep == null)
+                    {
+                        Logger.Warn("Checkup: mesh piece " + i + " inside block instance " + inputObj.Id +
+                            " could not be converted to a brep; the whole instance was left unchecked.");
+
+                        return false;
+                    }
                 }
                 else
                 {
-                    tempBrep = null;
-                }
-
-                if (tempBrep == null)
-                {
-                    Logger.Warn("Checkup: skipping unsupported geometry '" + pieceGeometry.GetType().Name +
+                    Logger.Warn("Checkup: dropping non-takeoff geometry '" + pieceGeometry.GetType().Name +
                         "' inside block instance " + inputObj.Id);
 
                     continue;
@@ -253,11 +407,14 @@ namespace QTO_Tool
                 }
                 else
                 {
-                    tempBrep.MergeCoplanarFaces(RunQTO.doc.ModelAngleToleranceRadians);
+                    tempBrep.MergeCoplanarFaces(RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians);
 
                     if (tempBrep.IsSolid)
                     {
-                        RunQTO.doc.Objects.Add(tempBrep, _mainObjectAttributes);
+                        Guid newObjectId = RunQTO.doc.Objects.Add(tempBrep, _mainObjectAttributes);
+                        _addedObjectIds.Add(newObjectId);
+
+                        Logger.Info("Checkup: block instance " + inputObj.Id + " piece " + i + " -> solid " + newObjectId + ".");
                     }
                     else
                     {
@@ -265,13 +422,22 @@ namespace QTO_Tool
                     }
                 }
             }
+
+            return true;
         }
 
-        //Prepare Brep or extrusion
-        static void PrepareMesh(RhinoObject inputObj, ObjectAttributes _mainObjectAttributes, List<Brep> _surfaceList)
+        //Prepare Mesh
+        static bool PrepareMesh(RhinoObject inputObj, ObjectAttributes _mainObjectAttributes, List<Brep> _surfaceList, List<Guid> _addedObjectIds)
         {
-
             Brep tempBrep = Brep.CreateFromMesh(((Mesh)inputObj.Geometry), true);
+
+            if (tempBrep == null)
+            {
+                Logger.Warn("Checkup: mesh object " + inputObj.Id + " on layer '" +
+                    LayerPathOf(_mainObjectAttributes) + "' could not be converted to a brep; it was left unchecked.");
+
+                return false;
+            }
 
             if (tempBrep.Faces.Count == 1)
             {
@@ -280,11 +446,14 @@ namespace QTO_Tool
 
             else
             {
-                tempBrep.MergeCoplanarFaces(RunQTO.doc.ModelAngleToleranceRadians);
+                tempBrep.MergeCoplanarFaces(RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians);
 
                 if (tempBrep.IsSolid)
                 {
-                    RunQTO.doc.Objects.Add(tempBrep, _mainObjectAttributes);
+                    Guid newObjectId = RunQTO.doc.Objects.Add(tempBrep, _mainObjectAttributes);
+                    _addedObjectIds.Add(newObjectId);
+
+                    Logger.Info("Checkup: mesh object " + inputObj.Id + " -> solid " + newObjectId + ".");
                 }
 
                 else
@@ -292,9 +461,17 @@ namespace QTO_Tool
                     _surfaceList.Add(tempBrep);
                 }
             }
+
+            return true;
         }
 
-        static void PrepareObject(RhinoObject inputObj, ObjectAttributes _mainObjectAttributes, List<Brep> _surfaceList, int _badGeometryCount, int _blockLevel)
+        /// <summary>
+        /// Rebuilds one document object into merged solids (added to the document and
+        /// recorded in _addedObjectIds) and open shells (staged in _surfaceList for
+        /// joining). Returns false when the geometry could not be converted, in which
+        /// case the caller must keep the original object.
+        /// </summary>
+        static bool PrepareObject(RhinoObject inputObj, ObjectAttributes _mainObjectAttributes, List<Brep> _surfaceList, List<Guid> _addedObjectIds)
         {
             _mainObjectAttributes.ObjectColor = System.Drawing.Color.Black;
             _mainObjectAttributes.ColorSource = ObjectColorSource.ColorFromObject;
@@ -303,7 +480,10 @@ namespace QTO_Tool
 
             if (objType == "BrepObject")
             {
-                Brep tempBrep = (Brep)inputObj.Geometry;
+                // Work on a duplicate so MergeCoplanarFaces cannot mutate the document
+                // object's own geometry (which also made the invalid-merge fallback
+                // below re-fetch the already-mutated brep instead of the original).
+                Brep tempBrep = (Brep)inputObj.Geometry.Duplicate();
 
                 if (tempBrep.Faces.Count == 1)
                 {
@@ -316,16 +496,16 @@ namespace QTO_Tool
 
                     if (tempBrep.IsSolid)
                     {
-                        if (tempBrep.IsValid)
+                        if (!tempBrep.IsValid)
                         {
-                            RunQTO.doc.Objects.Add(tempBrep, _mainObjectAttributes);
+                            tempBrep = (Brep)inputObj.Geometry.Duplicate();
                         }
-                        else
-                        {
-                            tempBrep = (Brep)inputObj.Geometry;
 
-                            RunQTO.doc.Objects.Add(tempBrep, _mainObjectAttributes);
-                        }
+                        Guid newObjectId = RunQTO.doc.Objects.Add(tempBrep, _mainObjectAttributes);
+                        _addedObjectIds.Add(newObjectId);
+
+                        Logger.Info("Checkup: object " + inputObj.Id + " (Brep, layer '" +
+                            LayerPathOf(_mainObjectAttributes) + "') -> solid " + newObjectId + ".");
                     }
 
                     else
@@ -339,6 +519,14 @@ namespace QTO_Tool
             {
                 Brep tempBrep = Brep.TryConvertBrep(inputObj.Geometry);
 
+                if (tempBrep == null)
+                {
+                    Logger.Warn("Checkup: extrusion object " + inputObj.Id + " on layer '" +
+                        LayerPathOf(_mainObjectAttributes) + "' could not be converted to a brep; it was left unchecked.");
+
+                    return false;
+                }
+
                 if (tempBrep.Faces.Count == 1)
                 {
                     _surfaceList.Add(tempBrep);
@@ -346,11 +534,15 @@ namespace QTO_Tool
 
                 else
                 {
-                    tempBrep.MergeCoplanarFaces(RunQTO.doc.ModelAngleToleranceRadians);
+                    tempBrep.MergeCoplanarFaces(RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians);
 
                     if (tempBrep.IsSolid)
                     {
-                        RunQTO.doc.Objects.Add(tempBrep, _mainObjectAttributes);
+                        Guid newObjectId = RunQTO.doc.Objects.Add(tempBrep, _mainObjectAttributes);
+                        _addedObjectIds.Add(newObjectId);
+
+                        Logger.Info("Checkup: object " + inputObj.Id + " (Extrusion, layer '" +
+                            LayerPathOf(_mainObjectAttributes) + "') -> solid " + newObjectId + ".");
                     }
 
                     else
@@ -362,25 +554,41 @@ namespace QTO_Tool
 
             else if (objType == "MeshObject")
             {
-                Methods.PrepareMesh(inputObj, _mainObjectAttributes, _surfaceList);
+                return Methods.PrepareMesh(inputObj, _mainObjectAttributes, _surfaceList, _addedObjectIds);
             }
 
             else if (objType == "InstanceObject")
             {
-                Methods.PrepareBlockInstance(inputObj, _mainObjectAttributes, _surfaceList, _badGeometryCount, _blockLevel);
+                return Methods.PrepareBlockInstance(inputObj, _mainObjectAttributes, _surfaceList, _addedObjectIds);
             }
+
+            else
+            {
+                // Not takeoff geometry (curve, point, annotation, ...). The checkup
+                // has always removed these; log it so a vanished object can be explained.
+                Logger.Warn("Checkup: object " + inputObj.Id + " of type " + objType + " on layer '" +
+                    LayerPathOf(_mainObjectAttributes) + "' is not takeoff geometry and will be removed from the model.");
+            }
+
+            return true;
         }
 
-        static int BadGeometryDetected(Brep brep, ObjectAttributes attributes, int _badGeometryCount)
+        static Guid AddBadGeometry(Brep brep, ObjectAttributes attributes)
         {
-            _badGeometryCount++;
+            // Several joined pieces of one source object share the same attributes
+            // instance; paint a duplicate red so good sibling pieces added later
+            // don't inherit the red color.
+            ObjectAttributes redAttributes = attributes.Duplicate();
 
-            attributes.ObjectColor = System.Drawing.Color.Red;
-            attributes.ColorSource = ObjectColorSource.ColorFromObject;
+            if (redAttributes == null)
+            {
+                redAttributes = attributes;
+            }
 
-            RunQTO.doc.Objects.AddBrep(brep, attributes);
+            redAttributes.ObjectColor = System.Drawing.Color.Red;
+            redAttributes.ColorSource = ObjectColorSource.ColorFromObject;
 
-            return _badGeometryCount;
+            return RunQTO.doc.Objects.AddBrep(brep, redAttributes);
         }
 
         public static void HighlightBadGeometry(RhinoObject rhobj)
@@ -536,6 +744,7 @@ namespace QTO_Tool
         public static void Blockify()
         {
             int objectIndex = 0;
+            int skippedObjCount = 0;
 
             // Snapshot the object table: the loop adds instances and deletes originals,
             // which invalidates a live enumeration.
@@ -570,15 +779,64 @@ namespace QTO_Tool
                     {
                         // Calculate the transformation to move the block instance back to its original position
                         Transform placeBack = Transform.Translation(bboxCenter - Point3d.Origin);
-                        RunQTO.doc.Objects.AddInstanceObject(blockDefIndex, placeBack, mainObjectAttributes);
-                    }
+                        Guid instanceId = RunQTO.doc.Objects.AddInstanceObject(blockDefIndex, placeBack, mainObjectAttributes);
 
-                    // Delete the original object
-                    RunQTO.doc.Objects.Delete(obj, true);
+                        if (instanceId == Guid.Empty)
+                        {
+                            // No instance was placed; deleting the original would lose the object.
+                            skippedObjCount++;
+
+                            if (!RunQTO.doc.InstanceDefinitions.Delete(blockDefIndex, true, true))
+                            {
+                                Logger.Warn("Blockify: could not delete the orphan block definition '" +
+                                    blockObjectName + "'.");
+                            }
+
+                            Logger.Warn("Blockify: could not place a block instance for object " + obj.Id +
+                                " on layer '" + layer.FullPath + "'; it was left as-is.");
+                        }
+                        // Delete can fail (locked object, locked layer). Keeping the new
+                        // instance next to an undeletable original would duplicate the
+                        // object in place, so undo the block instead.
+                        else if (!RunQTO.doc.Objects.Delete(obj, true))
+                        {
+                            skippedObjCount++;
+
+                            // The instance inherits the original's locked mode/layer, so a
+                            // mode-respecting delete would fail for the same reason the
+                            // original's did; ignoreModes forces the rollback through.
+                            RhinoObject instanceObject = RunQTO.doc.Objects.FindId(instanceId);
+
+                            if (instanceObject == null || !RunQTO.doc.Objects.Delete(instanceObject, true, true))
+                            {
+                                Logger.Warn("Blockify: rollback could not delete block instance " + instanceId +
+                                    "; the model may contain a duplicate.");
+                            }
+
+                            if (!RunQTO.doc.InstanceDefinitions.Delete(blockDefIndex, true, true))
+                            {
+                                Logger.Warn("Blockify: could not delete the orphan block definition '" +
+                                    blockObjectName + "'.");
+                            }
+
+                            Logger.Warn("Blockify: could not delete original object " + obj.Id + " on layer '" +
+                                layer.FullPath + "' (locked object or locked layer?); it was left as-is.");
+                        }
+                    }
+                    else
+                    {
+                        skippedObjCount++;
+
+                        Logger.Warn("Blockify: could not create a block definition for object " + obj.Id +
+                            " on layer '" + layer.FullPath + "'; it was left as-is.");
+                    }
 
                     objectIndex++;
                 }
             }
+
+            Logger.Info("Blockify finished: " + (docObjects.Count(o => !(o is InstanceObject)) - skippedObjCount) +
+                " objects blockified, " + skippedObjCount + " skipped.");
 
             RunQTO.doc.Views.Redraw();
         }

@@ -37,6 +37,12 @@ This repository (`SEA_VDC_QTO`, from the Seattle VDC quantity-takeoff collaborat
 
 > **Warning:** the checkup step deletes and re-adds objects while normalizing the model. Run it on a copy of your file, not your only original.
 
+> **Locked layers:** unlock all objects and layers before running the checkup. Locked objects cannot be rebuilt; the checkup leaves them untouched, skips them, and reports how many were skipped.
+
+## Log files
+
+Every `RunQTO` session writes a log file (`QTO_<date>_<time>.log`) to a `Logs` subfolder next to `QTO_Tool.rhp` — inside the plugin folder you unzipped, so it travels with the tool. If that folder is not writable, the log goes to `%AppData%\QTO_Tool\Logs` instead; the actual path is printed on the Rhino command line when the command starts. The log records every checkup decision per object (solid, joined, bad geometry and why, skipped because locked, errors), plus the exports. When reporting a bug, please attach the log file of the session, and if possible the `.3dm` model.
+
 ## IFC export details
 
 - Schema: IFC4, written with [xBIM Essentials](https://github.com/xBimTeam/XbimEssentials) 5.1.

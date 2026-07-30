@@ -90,15 +90,18 @@ namespace QTO_Tool
         }
 
         //Concrete model preparations
-        public static string ConcreteModelSetup()
+        public static string ConcreteModelSetup(out uint checkupUndoRecordSerial)
         {
             string modelUnitSystem = "Model's current unit system is: " + RunQTO.doc.GetUnitSystemName(true, true, true, true);
             string modelAngleTolerance = "Model's current angle tolerance is: " + RunQTO.doc.ModelAngleToleranceDegrees.ToString();
             string modelAbsoluteTolerance = "Model's current absolute tolerance is: " + RunQTO.doc.ModelAbsoluteTolerance.ToString();
 
             string examinationResult = "";
+            int solidObjCount = 0;
             int invalidObjCount = 0;
             int badGeometryCount = 0;
+            int ignoredObjCount = 0;
+            int lockedObjCount = 0;
             int skippedObjCount = 0;
 
             List<Brep> surfaceList = new List<Brep>();
@@ -107,145 +110,285 @@ namespace QTO_Tool
 
             // The loop adds and deletes document objects, which invalidates a live
             // ObjectTable enumeration, so it iterates over a snapshot instead.
-            List<RhinoObject> docObjects = RunQTO.doc.Objects.ToList();
+            // Deleted-but-unpurged objects (left behind by an earlier checkup that
+            // is still on the undo stack) show up in the enumeration and would
+            // inflate every count, so they are excluded from the snapshot.
+            List<RhinoObject> docObjects = new List<RhinoObject>();
+            int ghostObjCount = 0;
+
+            foreach (RhinoObject docObject in RunQTO.doc.Objects)
+            {
+                if (docObject.IsDeleted)
+                {
+                    ghostObjCount++;
+                }
+                else
+                {
+                    docObjects.Add(docObject);
+                }
+            }
+
+            if (ghostObjCount > 0)
+            {
+                Logger.Info("Checkup: excluded " + ghostObjCount + " deleted-but-unpurged objects from the snapshot.");
+            }
 
             Logger.Info("Checkup: processing " + docObjects.Count + " objects (" +
                 docObjects.Count(o => o is InstanceObject) + " block instances). Absolute tolerance: " +
                 RunQTO.doc.ModelAbsoluteTolerance + ", angle tolerance: " +
                 RunQTO.doc.ModelAngleToleranceDegrees + " degrees.");
 
-            foreach (RhinoObject obj in docObjects)
+            // One undo record around every document mutation, so the whole checkup
+            // can be reverted with a single RhinoDoc.Undo().
+            uint undoRecordSerial = RunQTO.doc.BeginUndoRecord("QTO Checkup");
+
+            checkupUndoRecordSerial = undoRecordSerial;
+
+            if (undoRecordSerial == 0)
             {
-                surfaceList.Clear();
-                addedObjectIds.Clear();
-
-                try
-                {
-                    bool objectHandled = true;
-
-                    if (obj.IsValid)
-                    {
-                        objectHandled = Methods.PrepareObject(obj, obj.Attributes, surfaceList, addedObjectIds);
-                    }
-                    else
-                    {
-                        invalidObjCount++;
-
-                        Logger.Warn("Checkup: object " + obj.Id + " on layer '" + Methods.LayerPathOf(obj.Attributes) +
-                            "' is not valid; it will be removed from the model.");
-                    }
-
-                    if (!objectHandled)
-                    {
-                        // Geometry conversion failed; keep the original instead of silently dropping it.
-                        skippedObjCount++;
-                        Methods.RollbackAddedObjects(addedObjectIds);
-                        continue;
-                    }
-
-                    Brep[] tempBreps = Brep.JoinBreps(surfaceList, RunQTO.doc.ModelAbsoluteTolerance);
-
-                    // Build the staged entries before deleting, so nothing that can
-                    // throw runs between a successful delete and the staging.
-                    List<CheckupBrep> stagedBreps = new List<CheckupBrep>();
-
-                    if (tempBreps != null)
-                    {
-                        foreach (Brep tempBrep in tempBreps)
-                        {
-                            stagedBreps.Add(new CheckupBrep(tempBrep, obj));
-                        }
-                    }
-
-                    // Delete can fail (locked object, locked layer). Re-adding the rebuilt
-                    // copies next to an undeletable original would duplicate it in place,
-                    // so roll the copies back and leave the object untouched instead.
-                    if (RunQTO.doc.Objects.Delete(obj))
-                    {
-                        joinedBreps.AddRange(stagedBreps);
-                    }
-                    else
-                    {
-                        skippedObjCount++;
-                        Methods.RollbackAddedObjects(addedObjectIds);
-
-                        Logger.Warn("Checkup: could not delete object " + obj.Id + " on layer '" +
-                            Methods.LayerPathOf(obj.Attributes) + "' (locked object or locked layer?); it was left unchecked.");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    skippedObjCount++;
-                    Methods.RollbackAddedObjects(addedObjectIds);
-
-                    Logger.Error("Checkup: processing object " + obj.Id + " on layer '" +
-                        Methods.LayerPathOf(obj.Attributes) + "' failed; it was left unchecked.", ex);
-                }
+                // BeginUndoRecord returns 0 when undo recording is disabled or
+                // another record is already active; the checkup still runs, but a
+                // one-click revert is impossible and must not be offered.
+                Logger.Warn("Checkup: no undo record could be started (undo recording disabled or " +
+                    "another record active); REVERT CHECKUP will be unavailable for this run.");
             }
 
-            foreach (CheckupBrep joinedBrep in joinedBreps)
+            try
             {
-                try
+                foreach (RhinoObject obj in docObjects)
                 {
-                    joinedBrep.Brep.MergeCoplanarFaces(RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians);
+                    surfaceList.Clear();
+                    addedObjectIds.Clear();
 
-                    // Compute returns null for degenerate geometry; treat that as bad
-                    // geometry instead of crashing after the originals are already gone.
-                    VolumeMassProperties massProperties = VolumeMassProperties.Compute(joinedBrep.Brep);
-
-                    double volumeErrorPercentage = double.NaN;
-
-                    // Volume != 0 (not > 0): an inward-oriented closed brep has a negative
-                    // volume and a negative error percentage, which the old code accepted
-                    // as good; only guard the null and divide-by-zero crash paths.
-                    if (massProperties != null && massProperties.Volume != 0)
+                    try
                     {
-                        volumeErrorPercentage = Math.Round((massProperties.VolumeError / massProperties.Volume) * 100, 3);
-                    }
+                        // Locked objects (object mode or layer) cannot be deleted by the
+                        // rebuild, so attempting it would only produce a rollback and a
+                        // scary failure count; leave them untouched instead.
+                        if (obj.IsLocked || Methods.IsLayerLocked(obj.Attributes))
+                        {
+                            lockedObjCount++;
 
-                    if (joinedBrep.IsSolid && volumeErrorPercentage <= 1)
+                            Logger.Info("Checkup: object " + obj.Id + " on layer '" + Methods.LayerPathOf(obj.Attributes) +
+                                "' left as-is (locked).");
+
+                            continue;
+                        }
+
+                        // Non-takeoff objects (curves, points, annotations, ...) carry no
+                        // quantities; they are left untouched instead of being deleted.
+                        // The filter runs before the validity check so an invalid curve
+                        // or annotation cannot fall into the invalid branch below and
+                        // be deleted like a broken solid.
+                        string objTypeName = obj.GetType().Name;
+
+                        if (objTypeName != "BrepObject" && objTypeName != "ExtrusionObject" &&
+                            objTypeName != "MeshObject" && objTypeName != "InstanceObject")
+                        {
+                            ignoredObjCount++;
+
+                            Logger.Info("Checkup: object " + obj.Id + " on layer '" + Methods.LayerPathOf(obj.Attributes) +
+                                "' ignored (not take-off geometry: " + objTypeName + ").");
+
+                            continue;
+                        }
+
+                        bool objectHandled = true;
+                        bool objectIsInvalid = false;
+
+                        if (obj.IsValid)
+                        {
+                            objectHandled = Methods.PrepareObject(obj, obj.Attributes, surfaceList, addedObjectIds);
+                        }
+                        else
+                        {
+                            // Counted as removed only after the delete below succeeds, so
+                            // a failed delete cannot report the object both as removed
+                            // (invalid) and as could-not-be-processed (skipped).
+                            objectIsInvalid = true;
+
+                            Logger.Warn("Checkup: object " + obj.Id + " on layer '" + Methods.LayerPathOf(obj.Attributes) +
+                                "' is not valid; it will be removed from the model.");
+                        }
+
+                        if (!objectHandled)
+                        {
+                            // Geometry conversion failed; keep the original instead of silently dropping it.
+                            skippedObjCount++;
+                            Methods.RollbackAddedObjects(addedObjectIds);
+                            continue;
+                        }
+
+                        // A valid object whose rebuild staged nothing and added nothing
+                        // (a block instance holding only curves/points/annotations, or
+                        // an empty block definition) must not be deleted: nothing would
+                        // replace it, so it would silently vanish from the model.
+                        if (!objectIsInvalid && surfaceList.Count == 0 && addedObjectIds.Count == 0)
+                        {
+                            ignoredObjCount++;
+
+                            Logger.Info("Checkup: object " + obj.Id + " on layer '" + Methods.LayerPathOf(obj.Attributes) +
+                                "' left as-is (its rebuild produced no take-off geometry).");
+
+                            continue;
+                        }
+
+                        Brep[] tempBreps = Brep.JoinBreps(surfaceList, RunQTO.doc.ModelAbsoluteTolerance);
+
+                        // Build the staged entries before deleting, so nothing that can
+                        // throw runs between a successful delete and the staging.
+                        List<CheckupBrep> stagedBreps = new List<CheckupBrep>();
+
+                        if (tempBreps != null)
+                        {
+                            foreach (Brep tempBrep in tempBreps)
+                            {
+                                stagedBreps.Add(new CheckupBrep(tempBrep, obj));
+                            }
+                        }
+
+                        // Delete can still fail for reasons other than locking (locked
+                        // objects never reach this point). Re-adding the rebuilt copies
+                        // next to an undeletable original would duplicate it in place,
+                        // so roll the copies back and leave the object untouched instead.
+                        if (RunQTO.doc.Objects.Delete(obj))
+                        {
+                            joinedBreps.AddRange(stagedBreps);
+
+                            // Solids added directly inside PrepareObject (closed breps,
+                            // extrusions, meshes, block pieces) are verified solids the
+                            // classification loop below never sees; count them here so
+                            // the headline "N solids verified" covers the common case.
+                            solidObjCount += addedObjectIds.Count;
+
+                            if (objectIsInvalid)
+                            {
+                                invalidObjCount++;
+                            }
+                        }
+                        else
+                        {
+                            skippedObjCount++;
+                            Methods.RollbackAddedObjects(addedObjectIds);
+
+                            Logger.Warn("Checkup: could not delete object " + obj.Id + " on layer '" +
+                                Methods.LayerPathOf(obj.Attributes) + "' (IsDeleted=" + obj.IsDeleted +
+                                ", IsLocked=" + obj.IsLocked + ", layer locked=" + Methods.IsLayerLocked(obj.Attributes) +
+                                "); it was left unchecked.");
+                        }
+                    }
+                    catch (Exception ex)
                     {
-                        Guid newObjectId = RunQTO.doc.Objects.AddBrep(joinedBrep.Brep, joinedBrep.Attributes);
+                        skippedObjCount++;
+                        Methods.RollbackAddedObjects(addedObjectIds);
 
-                        Logger.Info("Checkup: source object " + joinedBrep.SourceObjectId + " -> joined solid " +
-                            newObjectId + " on layer '" + joinedBrep.LayerPath + "', volume error " +
-                            volumeErrorPercentage + "%.");
+                        Logger.Error("Checkup: processing object " + obj.Id + " on layer '" +
+                            Methods.LayerPathOf(obj.Attributes) + "' failed; it was left unchecked.", ex);
                     }
-                    else
+                }
+
+                foreach (CheckupBrep joinedBrep in joinedBreps)
+                {
+                    try
+                    {
+                        joinedBrep.Brep.MergeCoplanarFaces(RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians);
+
+                        // Compute returns null for degenerate geometry; treat that as bad
+                        // geometry instead of crashing after the originals are already gone.
+                        VolumeMassProperties massProperties = VolumeMassProperties.Compute(joinedBrep.Brep);
+
+                        double volumeErrorPercentage = double.NaN;
+
+                        // Volume != 0 (not > 0): an inward-oriented closed brep has a negative
+                        // volume and a negative error percentage, which the old code accepted
+                        // as good; only guard the null and divide-by-zero crash paths.
+                        if (massProperties != null && massProperties.Volume != 0)
+                        {
+                            volumeErrorPercentage = Math.Round((massProperties.VolumeError / massProperties.Volume) * 100, 3);
+                        }
+
+                        if (joinedBrep.IsSolid && volumeErrorPercentage <= 1)
+                        {
+                            solidObjCount++;
+
+                            Guid newObjectId = RunQTO.doc.Objects.AddBrep(joinedBrep.Brep, joinedBrep.Attributes);
+
+                            Logger.Info("Checkup: source object " + joinedBrep.SourceObjectId + " -> joined solid " +
+                                newObjectId + " on layer '" + joinedBrep.LayerPath + "', volume error " +
+                                volumeErrorPercentage + "%.");
+                        }
+                        else
+                        {
+                            badGeometryCount++;
+
+                            Guid newObjectId = Methods.AddBadGeometry(joinedBrep.Brep, joinedBrep.Attributes);
+
+                            Logger.Warn("Checkup: BAD geometry from source object " + joinedBrep.SourceObjectId + " -> " +
+                                newObjectId + " on layer '" + joinedBrep.LayerPath + "': " +
+                                (joinedBrep.IsSolid ? "" : "open shell with " + Methods.CountNakedEdges(joinedBrep.Brep) + " naked edges; ") +
+                                "volume error " + (double.IsNaN(volumeErrorPercentage) ? "not computable" : volumeErrorPercentage + "%") + ".");
+                        }
+                    }
+                    catch (Exception ex)
                     {
                         badGeometryCount++;
 
-                        Guid newObjectId = Methods.AddBadGeometry(joinedBrep.Brep, joinedBrep.Attributes);
+                        Logger.Error("Checkup: could not classify joined brep from source object " +
+                            joinedBrep.SourceObjectId + " on layer '" + joinedBrep.LayerPath + "'; marked as bad.", ex);
 
-                        Logger.Warn("Checkup: BAD geometry from source object " + joinedBrep.SourceObjectId + " -> " +
-                            newObjectId + " on layer '" + joinedBrep.LayerPath + "': " +
-                            (joinedBrep.IsSolid ? "" : "open shell with " + Methods.CountNakedEdges(joinedBrep.Brep) + " naked edges; ") +
-                            "volume error " + (double.IsNaN(volumeErrorPercentage) ? "not computable" : volumeErrorPercentage + "%") + ".");
+                        try { Methods.AddBadGeometry(joinedBrep.Brep, joinedBrep.Attributes); } catch { }
                     }
                 }
-                catch (Exception ex)
+            }
+            finally
+            {
+                if (undoRecordSerial > 0)
                 {
-                    badGeometryCount++;
-
-                    Logger.Error("Checkup: could not classify joined brep from source object " +
-                        joinedBrep.SourceObjectId + " on layer '" + joinedBrep.LayerPath + "'; marked as bad.", ex);
-
-                    try { Methods.AddBadGeometry(joinedBrep.Brep, joinedBrep.Attributes); } catch { }
+                    RunQTO.doc.EndUndoRecord(undoRecordSerial);
                 }
             }
 
-            examinationResult = invalidObjCount.ToString() + " invalid objects exist in the model. \n";
-            examinationResult += badGeometryCount.ToString() + " bad geometry objects exist in the model.";
+            // Rhino discards an empty undo record while its serial stays consumed,
+            // so the UI's topmost-record check would still pass and Undo() would pop
+            // the user's own previous action. A run that changed no document object
+            // therefore reports no revertable record.
+            if (solidObjCount == 0 && invalidObjCount == 0 && badGeometryCount == 0)
+            {
+                checkupUndoRecordSerial = 0;
+            }
+
+            examinationResult = "Checkup complete: " + solidObjCount.ToString() + " solids verified.";
+            examinationResult += "\n" + badGeometryCount.ToString() + " bad geometry objects are highlighted in red.";
+
+            if (invalidObjCount > 0)
+            {
+                examinationResult += "\n" + invalidObjCount.ToString() + " invalid objects were removed.";
+            }
+
+            if (ignoredObjCount > 0)
+            {
+                examinationResult += "\n" + ignoredObjCount.ToString() + " curves/points were ignored (not take-off geometry).";
+            }
+
+            if (lockedObjCount > 0)
+            {
+                examinationResult += "\n" + lockedObjCount.ToString() + " locked objects were left as-is.";
+            }
 
             if (skippedObjCount > 0)
             {
                 examinationResult += "\n" + skippedObjCount.ToString() +
-                    " objects could not be processed (locked or failed) and were left unchanged, see log: " +
-                    (Logger.LogFilePath ?? "<log unavailable>");
+                    " objects could not be processed and were left unchanged (see log).";
             }
 
-            Logger.Info("Checkup summary: " + invalidObjCount + " invalid, " + badGeometryCount + " bad, " +
-                skippedObjCount + " skipped, " + joinedBreps.Count + " joined breps, of " +
+            if (undoRecordSerial == 0)
+            {
+                examinationResult += "\nUndo could not be recorded for this run; REVERT CHECKUP is unavailable.";
+            }
+
+            Logger.Info("Checkup summary: " + solidObjCount + " solids, " + invalidObjCount + " invalid, " +
+                badGeometryCount + " bad, " + ignoredObjCount + " ignored (non-takeoff), " + lockedObjCount +
+                " locked, " + skippedObjCount + " skipped, " + joinedBreps.Count + " joined breps, of " +
                 docObjects.Count + " objects.");
 
             RunQTO.doc.Views.Redraw();
@@ -299,6 +442,17 @@ namespace QTO_Tool
             addedObjectIds.Clear();
         }
 
+        /// <summary>
+        /// True when the object's layer exists and is locked; null-safe against
+        /// orphaned layer indices.
+        /// </summary>
+        internal static bool IsLayerLocked(ObjectAttributes attributes)
+        {
+            Layer layer = RunQTO.doc.Layers.FindIndex(attributes.LayerIndex);
+
+            return layer != null && layer.IsLocked;
+        }
+
         internal static string LayerPathOf(ObjectAttributes attributes)
         {
             try
@@ -344,7 +498,10 @@ namespace QTO_Tool
         /// Returns false when a solid-type piece (brep/extrusion/mesh) could not be
         /// converted, so the caller keeps the whole instance instead of deleting it
         /// with pieces missing. Unsupported piece types (curves, points, ...) are
-        /// dropped, matching how top-level unsupported objects are handled.
+        /// dropped, matching how top-level unsupported objects are handled. An
+        /// instance with no solid-type pieces at all returns true having staged
+        /// nothing; the caller detects the empty staging and keeps the original
+        /// instead of deleting an object nothing would replace.
         /// </summary>
         static bool PrepareBlockInstance(RhinoObject inputObj, ObjectAttributes _mainObjectAttributes, List<Brep> _surfaceList, List<Guid> _addedObjectIds)
         {
@@ -468,8 +625,8 @@ namespace QTO_Tool
         /// <summary>
         /// Rebuilds one document object into merged solids (added to the document and
         /// recorded in _addedObjectIds) and open shells (staged in _surfaceList for
-        /// joining). Returns false when the geometry could not be converted, in which
-        /// case the caller must keep the original object.
+        /// joining). Returns false when the geometry could not be converted or is
+        /// not takeoff geometry, in which case the caller must keep the original object.
         /// </summary>
         static bool PrepareObject(RhinoObject inputObj, ObjectAttributes _mainObjectAttributes, List<Brep> _surfaceList, List<Guid> _addedObjectIds)
         {
@@ -564,10 +721,14 @@ namespace QTO_Tool
 
             else
             {
-                // Not takeoff geometry (curve, point, annotation, ...). The checkup
-                // has always removed these; log it so a vanished object can be explained.
+                // Defensive path only: the checkup pre-filters non-takeoff objects
+                // (curves, points, annotations, ...) before calling PrepareObject.
+                // Returning false makes the caller keep the original, so nothing
+                // can ever silently delete geometry from here.
                 Logger.Warn("Checkup: object " + inputObj.Id + " of type " + objType + " on layer '" +
-                    LayerPathOf(_mainObjectAttributes) + "' is not takeoff geometry and will be removed from the model.");
+                    LayerPathOf(_mainObjectAttributes) + "' is not takeoff geometry; it was left unchecked.");
+
+                return false;
             }
 
             return true;

@@ -22,13 +22,35 @@ namespace QTO_Tool
             {
                 if (layer.IsDeleted == false)
                 {
-                    // Layers without any objects (e.g. parent layers used for level grouping)
-                    // are not element layers and get no template row.
+                    // Layers without any take-off geometry (parent layers used for
+                    // level grouping, curve-only reference layers, ...) are not
+                    // element layers and get no template row. After the checkup all
+                    // rebuilt geometry is a Brep, but locked extrusions, meshes, and
+                    // block instances were left as-is; their layers still need a row
+                    // so Calculate can flag those objects instead of silently
+                    // excluding the whole layer from the takeoff.
                     Rhino.DocObjects.RhinoObject[] layerObjects = RunQTO.doc.Objects.FindByLayer(layer);
 
-                    if (layerObjects == null || layerObjects.Length == 0)
+                    bool layerHasTakeoffGeometry = false;
+
+                    if (layerObjects != null)
                     {
-                        Logger.Info("Template list: skipping layer with no objects: " + layer.FullPath);
+                        foreach (Rhino.DocObjects.RhinoObject layerObject in layerObjects)
+                        {
+                            if (layerObject.Geometry is Rhino.Geometry.Brep ||
+                                layerObject.Geometry is Rhino.Geometry.Extrusion ||
+                                layerObject.Geometry is Rhino.Geometry.Mesh ||
+                                layerObject is Rhino.DocObjects.InstanceObject)
+                            {
+                                layerHasTakeoffGeometry = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (layerHasTakeoffGeometry == false)
+                    {
+                        Logger.Info("Template list: skipping layer with no take-off geometry: " + layer.FullPath);
 
                         continue;
                     }

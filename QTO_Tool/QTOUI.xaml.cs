@@ -45,6 +45,21 @@ namespace QTO_Tool
 
         List<RhinoObject> selectedObjects = new List<RhinoObject>();
 
+        // Re-entry guards for the checkup, revert, and calculate buttons; clicks
+        // queued while the UI thread was blocked must not start a second run.
+        private bool checkupRunning = false;
+        private bool revertRunning = false;
+        private bool calculateRunning = false;
+
+        // Serial number of the "QTO Checkup" undo record of the last successful
+        // checkup; 0 when no revertable record exists. Revert verifies against
+        // it that the checkup record is still the topmost undo record.
+        private uint checkupUndoRecordSerial = 0;
+
+        // Set while our own checkup/revert mutates the document, so the
+        // revert-validity watch ignores the events we cause ourselves.
+        private bool suppressDocEvents = false;
+
         //// Save/Load Dictionary
         //Dictionary<string, object> saveData = new Dictionary<string, object>();
         //Dictionary<string, object> loadData = new Dictionary<string, object>();
@@ -101,131 +116,399 @@ namespace QTO_Tool
 
         private void StartCheckup_Clicked(object sender, RoutedEventArgs e)
         {
-            // Always get the Active model
-            if (RunQTO.doc.IsAvailable == false)
+            // Clicks queued while a checkup blocked the UI thread must not start
+            // a second run on a half-processed document.
+            if (this.checkupRunning)
             {
-                RunQTO.doc = RhinoDoc.ActiveDoc;
+                return;
             }
 
-            Thread newWindowThread = new Thread(new ThreadStart(() =>
+            this.checkupRunning = true;
+            this.StartCheckup.IsEnabled = false;
+
+            try
             {
-                // Create our context, and install it:
-                SynchronizationContext.SetSynchronizationContext(
-                    new DispatcherSynchronizationContext(
-                        Dispatcher.CurrentDispatcher));
-
-                // Create and configure the window
-                ProgressWindow progressWindow = new ProgressWindow();
-
-                // When the window closes, shut down the dispatcher
-                progressWindow.Closed += (s, eventArg) =>
-                   Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background);
-
-                progressWindow.Show();
-                // Start the Dispatcher Processing
-                Dispatcher.Run();
-            }));
-
-            newWindowThread.SetApartmentState(ApartmentState.STA);
-            // Make the thread a background thread
-            newWindowThread.IsBackground = true;
-            // Start the thread
-            newWindowThread.Start();
-
-            this.layerPropertyColumnHeaders.Clear();
-
-            if (this.ConcreteIsIncluded.IsChecked == true)
-            {
-                Logger.Info("Checkup started.");
-
-                try
+                // Always get the Active model
+                if (RunQTO.doc.IsAvailable == false)
                 {
-                    this.CheckupResults.Content = Methods.ConcreteModelSetup();
+                    RunQTO.doc = RhinoDoc.ActiveDoc;
                 }
-                catch (Exception ex)
-                {
-                    Logger.Error("Checkup failed with an unhandled exception.", ex);
 
-                    this.CheckupResults.Content = "Checkup failed: " + ex.Message + Environment.NewLine +
-                        "Details were written to the log: " + (Logger.LogFilePath ?? "<log unavailable>");
+                Thread newWindowThread = new Thread(new ThreadStart(() =>
+                {
+                    // Create our context, and install it:
+                    SynchronizationContext.SetSynchronizationContext(
+                        new DispatcherSynchronizationContext(
+                            Dispatcher.CurrentDispatcher));
+
+                    // Create and configure the window
+                    ProgressWindow progressWindow = new ProgressWindow();
+
+                    // When the window closes, shut down the dispatcher
+                    progressWindow.Closed += (s, eventArg) =>
+                       Dispatcher.CurrentDispatcher.BeginInvokeShutdown(DispatcherPriority.Background);
+
+                    progressWindow.Show();
+                    // Start the Dispatcher Processing
+                    Dispatcher.Run();
+                }));
+
+                newWindowThread.SetApartmentState(ApartmentState.STA);
+                // Make the thread a background thread
+                newWindowThread.IsBackground = true;
+                // Start the thread
+                newWindowThread.Start();
+
+                this.layerPropertyColumnHeaders.Clear();
+
+                if (this.ConcreteIsIncluded.IsChecked == true)
+                {
+                    Logger.Info("Checkup started.");
+
+                    // Our own mutations must not trip the revert-validity watch left
+                    // over from a previous checkup.
+                    this.suppressDocEvents = true;
+
+                    try
+                    {
+                        this.CheckupResults.Content = Methods.ConcreteModelSetup(out this.checkupUndoRecordSerial);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error("Checkup failed with an unhandled exception.", ex);
+
+                        this.CheckupResults.Content = "Checkup failed: " + ex.Message + Environment.NewLine +
+                            "Details were written to the log: " + (Logger.LogFilePath ?? "<log unavailable>");
+                        this.CheckupResults.Visibility = Visibility.Visible;
+
+                        // The model may be half-processed and any result tables from a
+                        // previous run reference deleted object ids (their row toggles
+                        // would throw). Clear them and require a successful checkup
+                        // before calculating or exporting again.
+                        this.ConcreteTemplateGrid.Children.Clear();
+                        this.ConcreteTemplateGrid.RowDefinitions.Clear();
+                        this.DissipatedConcreteTablePanel.Children.Clear();
+
+                        this.CalculateQuantitiesButton.IsEnabled = false;
+                        this.ExportExcelButton.IsEnabled = false;
+                        this.ExportIFC.IsEnabled = false;
+                        this.Blockify.IsEnabled = false;
+
+                        // A failed checkup left an unknown mix of changes behind; a
+                        // one-click revert can no longer be trusted.
+                        this.RevertCheckupButton.IsEnabled = false;
+                        this.UnsubscribeRevertWatch();
+                        this.checkupUndoRecordSerial = 0;
+
+                        this.allSelectedTemplates.Clear();
+                        this.allSelectedTemplateValues.Clear();
+                        this.selectedConcreteTemplatesForLayers.Clear();
+
+                        MessageBox.Show("The model checkup failed with an error." + Environment.NewLine + Environment.NewLine +
+                            ex.Message + Environment.NewLine + Environment.NewLine +
+                            "Details were written to the log file:" + Environment.NewLine +
+                            (Logger.LogFilePath ?? "<log unavailable>"));
+
+                        Dispatcher.FromThread(newWindowThread)?.InvokeShutdown();
+
+                        return;
+                    }
+                    finally
+                    {
+                        this.suppressDocEvents = false;
+                    }
+
+                    Logger.Info("Checkup finished: " + this.CheckupResults.Content.ToString().Replace(Environment.NewLine, " | "));
+
                     this.CheckupResults.Visibility = Visibility.Visible;
 
-                    // The model may be half-processed and any result tables from a
-                    // previous run reference deleted object ids (their row toggles
-                    // would throw). Clear them and require a successful checkup
-                    // before calculating or exporting again.
+                    // RhinoDoc.Undo pops only the top undo record, so Revert is valid
+                    // only while the "QTO Checkup" record is topmost; the watch
+                    // disables it as soon as any other change lands on the document.
+                    // When no undo record could be started (serial 0, undo disabled
+                    // or another record active), there is nothing to revert to and
+                    // the button must stay disabled.
+                    if (this.checkupUndoRecordSerial > 0)
+                    {
+                        this.RevertCheckupButton.IsEnabled = true;
+                        this.SubscribeRevertWatch();
+                    }
+                    else
+                    {
+                        this.RevertCheckupButton.IsEnabled = false;
+                        this.UnsubscribeRevertWatch();
+                    }
+
+                    if (this.ConcreteTemplateGrid.Children.Count == 0)
+                    {
+                        UIMethods.GenerateLayerTemplate(this.ConcreteTemplateGrid, this.layerPropertyColumnHeaders);
+
+                        CalculateQuantitiesButton.IsEnabled = true;
+                        AngleThresholdLabel.IsEnabled = true;
+                        AngleThresholdSlider.IsEnabled = true;
+                        CombineValuesLabel.IsEnabled = true;
+                        CombinedValuesToggle.IsEnabled = true;
+                        this.Blockify.IsEnabled = true;
+                    }
+                    else
+                    {
+                        this.ConcreteTemplateGrid.Children.Clear();
+                        this.ConcreteTemplateGrid.RowDefinitions.Clear();
+                        UIMethods.GenerateLayerTemplate(this.ConcreteTemplateGrid, this.layerPropertyColumnHeaders);
+                        this.DissipatedConcreteTablePanel.Children.Clear();
+
+                        this.ExportExcelButton.IsEnabled = false;
+                        this.ExportIFC.IsEnabled = false;
+
+                        this.allSelectedTemplates.Clear();
+                        this.allSelectedTemplateValues.Clear();
+
+                        this.selectedConcreteTemplatesForLayers.Clear();
+
+                        //this.saveData.Clear();
+                        //this.loadData.Clear();
+                    }
+                }
+                if (this.ExteriorIsIncluded.IsChecked == true)
+                {
+
+                }
+
+                if (this.ConcreteIsIncluded.IsChecked == false && this.ExteriorIsIncluded.IsChecked == false)
+                {
+                    MessageBox.Show("Please select at least one of the methods.");
+                }
+
+                // -= before += so re-running the checkup never stacks a second copy
+                // of each selection-sync handler.
+                RhinoDoc.SelectObjects -= OnSelectObjects;
+                RhinoDoc.SelectObjects += OnSelectObjects;
+                RhinoDoc.DeselectObjects -= OnDeselectObjects;
+                RhinoDoc.DeselectObjects += OnDeselectObjects;
+                RhinoDoc.DeselectAllObjects -= OnDeselectAllObjects;
+                RhinoDoc.DeselectAllObjects += OnDeselectAllObjects;
+
+                Dispatcher.FromThread(newWindowThread)?.InvokeShutdown();
+            }
+            finally
+            {
+                // ApplicationIdle: clicks queued while the UI thread was blocked are
+                // dispatched at input priority first, so they land on the button
+                // while it is still disabled instead of starting another run.
+                this.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    this.StartCheckup.IsEnabled = true;
+                    this.checkupRunning = false;
+                }), DispatcherPriority.ApplicationIdle);
+            }
+        }
+
+        /*---------------- Revert checkup ----------------*/
+        private void RevertCheckup_Clicked(object sender, RoutedEventArgs e)
+        {
+            if (this.revertRunning)
+            {
+                return;
+            }
+
+            this.revertRunning = true;
+            this.suppressDocEvents = true;
+
+            try
+            {
+                // Undo pops the topmost record, which is the checkup record only if
+                // no undo record of any kind was created since. The serial check
+                // catches undoable changes the event watch has no event for
+                // (linetype edits, ...): if the next record serial moved past
+                // ours + 1, something else was recorded on top and a blind Undo
+                // would revert the wrong thing while claiming success.
+                bool checkupRecordIsTopmost = RunQTO.doc != null && RunQTO.doc.IsAvailable &&
+                    this.checkupUndoRecordSerial > 0 &&
+                    RunQTO.doc.NextUndoRecordSerialNumber == this.checkupUndoRecordSerial + 1;
+
+                // Undo fires add/delete document events for every object it restores;
+                // suppressDocEvents keeps the watch from reacting to our own revert.
+                bool undoSucceeded = checkupRecordIsTopmost && RunQTO.doc.Undo();
+
+                if (undoSucceeded)
+                {
+                    // Every result table and calculated quantity referenced objects
+                    // that no longer exist after the undo.
                     this.ConcreteTemplateGrid.Children.Clear();
                     this.ConcreteTemplateGrid.RowDefinitions.Clear();
+
                     this.DissipatedConcreteTablePanel.Children.Clear();
+                    this.DissipatedConcreteTablePanel.Visibility = Visibility.Collapsed;
+
+                    this.allBeams.Clear();
+                    this.allColumns.Clear();
+                    this.allContinuousFootings.Clear();
+                    this.allCurbs.Clear();
+                    this.allFootings.Clear();
+                    this.allSlabs.Clear();
+                    this.allWalls.Clear();
+                    this.allStyrofoams.Clear();
+                    this.allStairs.Clear();
+
+                    this.allSelectedTemplates.Clear();
+                    this.allSelectedTemplateValues.Clear();
+                    this.selectedConcreteTemplatesForLayers.Clear();
+                    this.layerPropertyColumnHeaders.Clear();
+                    this.selectedObjects.Clear();
 
                     this.CalculateQuantitiesButton.IsEnabled = false;
                     this.ExportExcelButton.IsEnabled = false;
-                    this.ConcreteSaveButton.IsEnabled = false;
+                    this.ExportIFC.IsEnabled = false;
                     this.Blockify.IsEnabled = false;
+                    this.AngleThresholdSlider.IsEnabled = false;
+                    this.AngleThresholdLabel.IsEnabled = false;
+                    this.CombinedValuesToggle.IsEnabled = false;
+                    this.CombineValuesLabel.IsEnabled = false;
+                    this.RevertCheckupButton.IsEnabled = false;
+                    this.checkupUndoRecordSerial = 0;
 
-                    this.allSelectedTemplates.Clear();
-                    this.allSelectedTemplateValues.Clear();
-                    this.selectedConcreteTemplatesForLayers.Clear();
+                    this.CheckupResults.Content = "Checkup reverted — the model was restored to its pre-checkup state.";
+                    this.CheckupResults.Visibility = Visibility.Visible;
 
-                    MessageBox.Show("The model checkup failed with an error." + Environment.NewLine + Environment.NewLine +
-                        ex.Message + Environment.NewLine + Environment.NewLine +
-                        "Details were written to the log file:" + Environment.NewLine +
-                        (Logger.LogFilePath ?? "<log unavailable>"));
+                    RunQTO.doc.Views.Redraw();
 
-                    Dispatcher.FromThread(newWindowThread)?.InvokeShutdown();
-
-                    return;
-                }
-
-                Logger.Info("Checkup finished: " + this.CheckupResults.Content.ToString().Replace(Environment.NewLine, " | "));
-
-                this.CheckupResults.Visibility = Visibility.Visible;
-
-                if (this.ConcreteTemplateGrid.Children.Count == 0)
-                {
-                    UIMethods.GenerateLayerTemplate(this.ConcreteTemplateGrid, this.layerPropertyColumnHeaders);
-
-                    CalculateQuantitiesButton.IsEnabled = true;
-                    AngleThresholdLabel.IsEnabled = true;
-                    AngleThresholdSlider.IsEnabled = true;
-                    CombineValuesLabel.IsEnabled = true;
-                    CombinedValuesToggle.IsEnabled = true;
-                    this.Blockify.IsEnabled = true;
+                    Logger.Info("Checkup reverted: the QTO Checkup undo record was rolled back.");
                 }
                 else
                 {
-                    this.ConcreteTemplateGrid.Children.Clear();
-                    this.ConcreteTemplateGrid.RowDefinitions.Clear();
-                    UIMethods.GenerateLayerTemplate(this.ConcreteTemplateGrid, this.layerPropertyColumnHeaders);
-                    this.DissipatedConcreteTablePanel.Children.Clear();
+                    Logger.Warn("Revert checkup: the QTO Checkup record is no longer the topmost undo record " +
+                        "(or the undo itself failed); nothing was reverted.");
 
-                    this.ExportExcelButton.IsEnabled = false;
-                    this.ConcreteSaveButton.IsEnabled = false;
+                    // The record is not on top of the undo stack (or the document
+                    // changed), so a blind Undo would revert the wrong thing.
+                    this.RevertCheckupButton.IsEnabled = false;
+                    this.checkupUndoRecordSerial = 0;
 
-                    this.allSelectedTemplates.Clear();
-                    this.allSelectedTemplateValues.Clear();
-
-                    this.selectedConcreteTemplatesForLayers.Clear();
-
-                    //this.saveData.Clear();
-                    //this.loadData.Clear();
+                    MessageBox.Show("The checkup could not be reverted automatically." + Environment.NewLine + Environment.NewLine +
+                        "Use Rhino's Undo command to step back through the recent changes instead.");
                 }
             }
-            if (this.ExteriorIsIncluded.IsChecked == true)
+            finally
             {
+                this.suppressDocEvents = false;
+                this.UnsubscribeRevertWatch();
+                this.revertRunning = false;
+            }
+        }
 
+        /*---------------- Revert-validity watch ----------------*/
+        // Revert relies on RhinoDoc.Undo(), which pops only the topmost undo
+        // record. Any document change after the checkup pushes a new record on
+        // top, so the first foreign change permanently invalidates Revert.
+        // Object events alone are not enough: layer edits from the modeless
+        // Layers panel (lock, rename, color), material, group, dimstyle, and
+        // block-definition edits are undoable but fire only their table events.
+        // Undoable changes with no RhinoCommon event at all (linetype edits,
+        // ...) are caught by the topmost-record serial check in
+        // RevertCheckup_Clicked.
+        private void SubscribeRevertWatch()
+        {
+            // Always -= before += so handlers never stack.
+            this.UnsubscribeRevertWatch();
+
+            RhinoDoc.AddRhinoObject += OnDocObjectChanged_InvalidateRevert;
+            RhinoDoc.DeleteRhinoObject += OnDocObjectChanged_InvalidateRevert;
+            RhinoDoc.UndeleteRhinoObject += OnDocObjectChanged_InvalidateRevert;
+            RhinoDoc.ReplaceRhinoObject += OnDocObjectReplaced_InvalidateRevert;
+            RhinoDoc.ModifyObjectAttributes += OnDocObjectAttributesModified_InvalidateRevert;
+            RhinoDoc.LayerTableEvent += OnLayerTableChanged_InvalidateRevert;
+            RhinoDoc.MaterialTableEvent += OnMaterialTableChanged_InvalidateRevert;
+            RhinoDoc.GroupTableEvent += OnGroupTableChanged_InvalidateRevert;
+            RhinoDoc.DimensionStyleTableEvent += OnDimStyleTableChanged_InvalidateRevert;
+            RhinoDoc.InstanceDefinitionTableEvent += OnInstanceDefinitionTableChanged_InvalidateRevert;
+        }
+
+        private void UnsubscribeRevertWatch()
+        {
+            RhinoDoc.AddRhinoObject -= OnDocObjectChanged_InvalidateRevert;
+            RhinoDoc.DeleteRhinoObject -= OnDocObjectChanged_InvalidateRevert;
+            RhinoDoc.UndeleteRhinoObject -= OnDocObjectChanged_InvalidateRevert;
+            RhinoDoc.ReplaceRhinoObject -= OnDocObjectReplaced_InvalidateRevert;
+            RhinoDoc.ModifyObjectAttributes -= OnDocObjectAttributesModified_InvalidateRevert;
+            RhinoDoc.LayerTableEvent -= OnLayerTableChanged_InvalidateRevert;
+            RhinoDoc.MaterialTableEvent -= OnMaterialTableChanged_InvalidateRevert;
+            RhinoDoc.GroupTableEvent -= OnGroupTableChanged_InvalidateRevert;
+            RhinoDoc.DimensionStyleTableEvent -= OnDimStyleTableChanged_InvalidateRevert;
+            RhinoDoc.InstanceDefinitionTableEvent -= OnInstanceDefinitionTableChanged_InvalidateRevert;
+        }
+
+        private void OnDocObjectChanged_InvalidateRevert(object sender, RhinoObjectEventArgs e)
+        {
+            this.InvalidateRevert();
+        }
+
+        private void OnDocObjectReplaced_InvalidateRevert(object sender, RhinoReplaceObjectEventArgs e)
+        {
+            this.InvalidateRevert();
+        }
+
+        private void OnDocObjectAttributesModified_InvalidateRevert(object sender, RhinoModifyObjectAttributesEventArgs e)
+        {
+            this.InvalidateRevert();
+        }
+
+        private void OnLayerTableChanged_InvalidateRevert(object sender, Rhino.DocObjects.Tables.LayerTableEventArgs e)
+        {
+            this.InvalidateRevert();
+        }
+
+        private void OnMaterialTableChanged_InvalidateRevert(object sender, Rhino.DocObjects.Tables.MaterialTableEventArgs e)
+        {
+            this.InvalidateRevert();
+        }
+
+        private void OnGroupTableChanged_InvalidateRevert(object sender, Rhino.DocObjects.Tables.GroupTableEventArgs e)
+        {
+            this.InvalidateRevert();
+        }
+
+        private void OnDimStyleTableChanged_InvalidateRevert(object sender, Rhino.DocObjects.Tables.DimStyleTableEventArgs e)
+        {
+            this.InvalidateRevert();
+        }
+
+        private void OnInstanceDefinitionTableChanged_InvalidateRevert(object sender, Rhino.DocObjects.Tables.InstanceDefinitionTableEventArgs e)
+        {
+            this.InvalidateRevert();
+        }
+
+        private void InvalidateRevert()
+        {
+            if (this.suppressDocEvents)
+            {
+                return;
             }
 
-            if (this.ConcreteIsIncluded.IsChecked == false && this.ExteriorIsIncluded.IsChecked == false)
+            this.UnsubscribeRevertWatch();
+
+            if (this.Dispatcher.CheckAccess())
             {
-                MessageBox.Show("Please select at least one of the methods.");
+                this.RevertCheckupButton.IsEnabled = false;
             }
+            else
+            {
+                this.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    this.RevertCheckupButton.IsEnabled = false;
+                }));
+            }
+        }
 
-            RhinoDoc.SelectObjects += OnSelectObjects;
-            RhinoDoc.DeselectObjects += OnDeselectObjects;
-            RhinoDoc.DeselectAllObjects += OnDeselectAllObjects;
+        /*---------------- Window closing ----------------*/
+        private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            // Static RhinoDoc events outlive the window; without this, reopening
+            // the window stacks a second copy of every handler.
+            RhinoDoc.SelectObjects -= OnSelectObjects;
+            RhinoDoc.DeselectObjects -= OnDeselectObjects;
+            RhinoDoc.DeselectAllObjects -= OnDeselectAllObjects;
 
-            Dispatcher.FromThread(newWindowThread).InvokeShutdown();
+            this.UnsubscribeRevertWatch();
         }
 
         /*---------------- Handeling Select Object Event ----------------*/
@@ -234,6 +517,13 @@ namespace QTO_Tool
             ToggleButton btn = sender as ToggleButton;
 
             RhinoObject rhobj = RunQTO.doc.Objects.FindId(new Guid(btn.Uid));
+
+            // The row can outlive its object (undo, revert, manual delete);
+            // a stale toggle must not throw.
+            if (rhobj == null)
+            {
+                return;
+            }
 
             selectedObjects.Add(rhobj);
 
@@ -249,6 +539,13 @@ namespace QTO_Tool
 
             RhinoObject rhobj = RunQTO.doc.Objects.FindId(new Guid(btn.Uid));
 
+            // The row can outlive its object (undo, revert, manual delete);
+            // a stale toggle must not throw.
+            if (rhobj == null)
+            {
+                return;
+            }
+
             selectedObjects.Remove(rhobj);
 
             rhobj.Select(false);
@@ -257,6 +554,44 @@ namespace QTO_Tool
         }
 
         private void Calculate_Concrete_Clicked(object sender, RoutedEventArgs e)
+        {
+            // Clicks queued while a calculation blocked the UI thread must not
+            // start a second run: the template containers would end up holding
+            // every element twice and the exports would double the quantities.
+            if (this.calculateRunning)
+            {
+                return;
+            }
+
+            this.calculateRunning = true;
+            this.CalculateQuantitiesButton.IsEnabled = false;
+
+            // Calculate creates no undo record, but red-painting failed objects
+            // fires ModifyObjectAttributes; without the suppression that event
+            // would tear down the revert watch even though the "QTO Checkup"
+            // record is still topmost and Revert would still work.
+            this.suppressDocEvents = true;
+
+            try
+            {
+                this.CalculateConcrete();
+            }
+            finally
+            {
+                this.suppressDocEvents = false;
+
+                // ApplicationIdle: clicks queued while the UI thread was blocked
+                // are dispatched at input priority first, so they land on the
+                // button while it is still disabled instead of starting another run.
+                this.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    this.CalculateQuantitiesButton.IsEnabled = true;
+                    this.calculateRunning = false;
+                }), DispatcherPriority.ApplicationIdle);
+            }
+        }
+
+        private void CalculateConcrete()
         {
             // Create a new Stopwatch instance
             Stopwatch stopwatch = new Stopwatch();
@@ -305,6 +640,8 @@ namespace QTO_Tool
 
             int badGeometryCount = 0;
 
+            bool calculateSucceeded = false;
+
             this.allBeams.Clear();
             this.allColumns.Clear();
             this.allCurbs.Clear();
@@ -313,6 +650,9 @@ namespace QTO_Tool
             this.allContinuousFootings.Clear();
             this.allSlabs.Clear();
             this.allStyrofoams.Clear();
+            // Without this clear a second run doubles every stair in the IFC
+            // export, which iterates this.allStairs directly.
+            this.allStairs.Clear();
 
             this.allSelectedTemplates.Clear();
             this.allSelectedTemplateValues.Clear();
@@ -372,6 +712,15 @@ namespace QTO_Tool
                                     {
                                         rhobj = rhobjs[j];
 
+                                        // Curves and points have no quantities and are skipped, but
+                                        // take-off geometry the checkup left as-is (locked
+                                        // extrusions/meshes/blocks) is counted and flagged instead
+                                        // of being silently dropped from the takeoff.
+                                        if (!this.IsMeasurableBrep(rhobj, layerName, ref badGeometryCount))
+                                        {
+                                            continue;
+                                        }
+
                                         BeamTemplate beam = new BeamTemplate(rhobj, layerName, layerColor, angleThreshold, ElevationInput.floorElevations);
 
                                         if (allBeams.allTemplates.ContainsKey(beam.floor))
@@ -430,6 +779,15 @@ namespace QTO_Tool
                                     {
                                         rhobj = rhobjs[j];
 
+                                        // Curves and points have no quantities and are skipped, but
+                                        // take-off geometry the checkup left as-is (locked
+                                        // extrusions/meshes/blocks) is counted and flagged instead
+                                        // of being silently dropped from the takeoff.
+                                        if (!this.IsMeasurableBrep(rhobj, layerName, ref badGeometryCount))
+                                        {
+                                            continue;
+                                        }
+
                                         ColumnTemplate column = new ColumnTemplate(rhobj, layerName, layerColor, true, ElevationInput.floorElevations);
 
                                         if (allColumns.allTemplates.ContainsKey(column.floor))
@@ -473,6 +831,15 @@ namespace QTO_Tool
                                     {
                                         rhobj = rhobjs[j];
 
+                                        // Curves and points have no quantities and are skipped, but
+                                        // take-off geometry the checkup left as-is (locked
+                                        // extrusions/meshes/blocks) is counted and flagged instead
+                                        // of being silently dropped from the takeoff.
+                                        if (!this.IsMeasurableBrep(rhobj, layerName, ref badGeometryCount))
+                                        {
+                                            continue;
+                                        }
+
                                         ColumnTemplate column = new ColumnTemplate(rhobj, layerName, layerColor, false, ElevationInput.floorElevations);
 
                                         if (allColumns.allTemplates.ContainsKey(column.floor))
@@ -515,6 +882,15 @@ namespace QTO_Tool
                                     try
                                     {
                                         rhobj = rhobjs[j];
+
+                                        // Curves and points have no quantities and are skipped, but
+                                        // take-off geometry the checkup left as-is (locked
+                                        // extrusions/meshes/blocks) is counted and flagged instead
+                                        // of being silently dropped from the takeoff.
+                                        if (!this.IsMeasurableBrep(rhobj, layerName, ref badGeometryCount))
+                                        {
+                                            continue;
+                                        }
 
                                         ContinuousFootingTemplate continuousFooting = new ContinuousFootingTemplate(rhobj, layerName, layerColor, angleThreshold, ElevationInput.floorElevations);
 
@@ -560,6 +936,15 @@ namespace QTO_Tool
                                     {
                                         rhobj = rhobjs[j];
 
+                                        // Curves and points have no quantities and are skipped, but
+                                        // take-off geometry the checkup left as-is (locked
+                                        // extrusions/meshes/blocks) is counted and flagged instead
+                                        // of being silently dropped from the takeoff.
+                                        if (!this.IsMeasurableBrep(rhobj, layerName, ref badGeometryCount))
+                                        {
+                                            continue;
+                                        }
+
                                         CurbTemplate curb = new CurbTemplate(rhobj, layerName, layerColor, angleThreshold, ElevationInput.floorElevations);
 
                                         if (allCurbs.allTemplates.ContainsKey(curb.floor))
@@ -604,6 +989,15 @@ namespace QTO_Tool
                                     {
                                         rhobj = rhobjs[j];
 
+                                        // Curves and points have no quantities and are skipped, but
+                                        // take-off geometry the checkup left as-is (locked
+                                        // extrusions/meshes/blocks) is counted and flagged instead
+                                        // of being silently dropped from the takeoff.
+                                        if (!this.IsMeasurableBrep(rhobj, layerName, ref badGeometryCount))
+                                        {
+                                            continue;
+                                        }
+
                                         FootingTemplate footing = new FootingTemplate(rhobj, layerName, layerColor, angleThreshold, ElevationInput.floorElevations);
 
                                         if (allFootings.allTemplates.ContainsKey(footing.floor))
@@ -646,6 +1040,15 @@ namespace QTO_Tool
                                     try
                                     {
                                         rhobj = rhobjs[j];
+
+                                        // Curves and points have no quantities and are skipped, but
+                                        // take-off geometry the checkup left as-is (locked
+                                        // extrusions/meshes/blocks) is counted and flagged instead
+                                        // of being silently dropped from the takeoff.
+                                        if (!this.IsMeasurableBrep(rhobj, layerName, ref badGeometryCount))
+                                        {
+                                            continue;
+                                        }
 
                                         WallTemplate wall = new WallTemplate(rhobj, layerName, layerColor, angleThreshold, ElevationInput.floorElevations);
 
@@ -690,6 +1093,15 @@ namespace QTO_Tool
                                     try
                                     {
                                         rhobj = rhobjs[j];
+
+                                        // Curves and points have no quantities and are skipped, but
+                                        // take-off geometry the checkup left as-is (locked
+                                        // extrusions/meshes/blocks) is counted and flagged instead
+                                        // of being silently dropped from the takeoff.
+                                        if (!this.IsMeasurableBrep(rhobj, layerName, ref badGeometryCount))
+                                        {
+                                            continue;
+                                        }
 
                                         SlabTemplate slab = new SlabTemplate(rhobj, layerName, layerColor, angleThreshold, ElevationInput.floorElevations);
 
@@ -747,6 +1159,15 @@ namespace QTO_Tool
                                     {
                                         rhobj = rhobjs[j];
 
+                                        // Curves and points have no quantities and are skipped, but
+                                        // take-off geometry the checkup left as-is (locked
+                                        // extrusions/meshes/blocks) is counted and flagged instead
+                                        // of being silently dropped from the takeoff.
+                                        if (!this.IsMeasurableBrep(rhobj, layerName, ref badGeometryCount))
+                                        {
+                                            continue;
+                                        }
+
                                         StyrofoamTemplate styrofoam = new StyrofoamTemplate(rhobj, layerName, layerColor, ElevationInput.floorElevations);
 
                                         if (allStyrofoams.allTemplates.ContainsKey(styrofoam.floor))
@@ -789,6 +1210,15 @@ namespace QTO_Tool
                                     try
                                     {
                                         rhobj = rhobjs[j];
+
+                                        // Curves and points have no quantities and are skipped, but
+                                        // take-off geometry the checkup left as-is (locked
+                                        // extrusions/meshes/blocks) is counted and flagged instead
+                                        // of being silently dropped from the takeoff.
+                                        if (!this.IsMeasurableBrep(rhobj, layerName, ref badGeometryCount))
+                                        {
+                                            continue;
+                                        }
 
                                         StairTemplate stair = new StairTemplate(rhobj, layerName, layerColor, angleThreshold, ElevationInput.floorElevations);
 
@@ -849,81 +1279,80 @@ namespace QTO_Tool
                     }
                 }
 
-                if (badGeometryCount == 0)
+                foreach (var item in allSlabs.allTemplates)
                 {
-                    foreach (var item in allSlabs.allTemplates)
+                    foreach (SlabTemplate slab in item.Value)
                     {
-                        foreach (SlabTemplate slab in item.Value)
-                        {
-                            slab.UpdateNetVolumeAndBottomAreaWithBeams();
+                        slab.UpdateNetVolumeAndBottomAreaWithBeams();
 
-                            ((TextBlock)(Methods.GetByUid(this.DissipatedConcreteTablePanel, slab.id + "_NetVolume"))).Text = slab.netVolume.ToString();
+                        ((TextBlock)(Methods.GetByUid(this.DissipatedConcreteTablePanel, slab.id + "_NetVolume"))).Text = slab.netVolume.ToString();
 
-                            ((TextBlock)(Methods.GetByUid(this.DissipatedConcreteTablePanel, slab.id + "_BottomArea"))).Text = slab.bottomArea.ToString();
-                        }
+                        ((TextBlock)(Methods.GetByUid(this.DissipatedConcreteTablePanel, slab.id + "_BottomArea"))).Text = slab.bottomArea.ToString();
                     }
-
-                    this.allSelectedTemplates.Add("Beam", allBeams);
-                    this.allSelectedTemplateValues.Add("Beam", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "BOTTOM AREA", "SIDE AREA", "LENGTH", "ISOLATE" });
-                    this.allSelectedTemplates.Add("Column", allColumns);
-                    this.allSelectedTemplateValues.Add("Column", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "HEIGHT", "SIDE AREA", "ISOLATE" });
-                    this.allSelectedTemplates.Add("Curb", allCurbs);
-                    this.allSelectedTemplateValues.Add("Curb", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "TOP AREA", "SIDE AREA", "LENGTH", "ISOLATE" });
-                    this.allSelectedTemplates.Add("Footing", allFootings);
-                    this.allSelectedTemplateValues.Add("Footing", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "TOP AREA", "BOTTOM AREA", "SIDE AREA", "ISOLATE" });
-                    this.allSelectedTemplates.Add("Wall", allWalls);
-                    this.allSelectedTemplateValues.Add("Wall", new List<string>() { "COUNT", "NAME ABB.","FLOOR", "GROSS VOLUME", "NET VOLUME", "TOP AREA", "END AREA",
-                            "SIDE-1", "SIDE-2", "LENGTH", "OPENING AREA" ,"ISOLATE" });
-                    this.allSelectedTemplates.Add("Continuous Footing", allContinuousFootings);
-                    this.allSelectedTemplateValues.Add("Continuous Footing", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "TOP AREA", "BOTTOM AREA", "SIDE AREA", "LENGTH", "ISOLATE" });
-                    this.allSelectedTemplates.Add("Slab", allSlabs);
-                    this.allSelectedTemplateValues.Add("Slab", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "NET VOLUME", "TOP AREA", "BOTTOM AREA", "EDGE AREA", "PERIMETER", "OPENING PERIMETER", "ISOLATE" });
-                    this.allSelectedTemplates.Add("Styrofoam", allStyrofoams);
-                    this.allSelectedTemplateValues.Add("Styrofoam", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "ISOLATE" });
-                    this.allSelectedTemplates.Add("Stair", allStairs);
-                    this.allSelectedTemplateValues.Add("Stair", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "VOLUME", "TREAD AREA", "RISER AREA", "TREAD COUNT", "SIDE AREA", "BOTTOM AREA", "ISOLATE" });
-
-                    // Generate Combined Value Table
-                    //UIMethods.GenerateCombinedTableExpander(this.CombinedConcreteTablePanel, this.allSelectedTemplates,
-                    //    this.allSelectedTemplateValues, ObjectSelection_Activated, ObjectDeselection_Activated);
-
-                    if (CombinedValuesToggle.IsChecked == true)
-                    {
-                        this.DissipatedConcreteTablePanel.Visibility = Visibility.Collapsed;
-                        //this.CombinedConcreteTablePanel.Visibility = Visibility.Visible;
-                    }
-
-                    else
-                    {
-                        this.DissipatedConcreteTablePanel.Visibility = Visibility.Visible;
-                        //this.CombinedConcreteTablePanel.Visibility = Visibility.Collapsed;
-                    }
-
-                    this.ExportExcelButton.IsEnabled = true;
-                    this.ConcreteSaveButton.IsEnabled = true;
-                    this.ExportIFC.IsEnabled = true;
-
-                    Dispatcher.FromThread(newWindowThread).InvokeShutdown();
                 }
+
+                this.allSelectedTemplates.Add("Beam", allBeams);
+                this.allSelectedTemplateValues.Add("Beam", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "BOTTOM AREA", "SIDE AREA", "LENGTH", "ISOLATE" });
+                this.allSelectedTemplates.Add("Column", allColumns);
+                this.allSelectedTemplateValues.Add("Column", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "HEIGHT", "SIDE AREA", "ISOLATE" });
+                this.allSelectedTemplates.Add("Curb", allCurbs);
+                this.allSelectedTemplateValues.Add("Curb", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "TOP AREA", "SIDE AREA", "LENGTH", "ISOLATE" });
+                this.allSelectedTemplates.Add("Footing", allFootings);
+                this.allSelectedTemplateValues.Add("Footing", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "TOP AREA", "BOTTOM AREA", "SIDE AREA", "ISOLATE" });
+                this.allSelectedTemplates.Add("Wall", allWalls);
+                this.allSelectedTemplateValues.Add("Wall", new List<string>() { "COUNT", "NAME ABB.","FLOOR", "GROSS VOLUME", "NET VOLUME", "TOP AREA", "END AREA",
+                        "SIDE-1", "SIDE-2", "LENGTH", "OPENING AREA" ,"ISOLATE" });
+                this.allSelectedTemplates.Add("Continuous Footing", allContinuousFootings);
+                this.allSelectedTemplateValues.Add("Continuous Footing", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "TOP AREA", "BOTTOM AREA", "SIDE AREA", "LENGTH", "ISOLATE" });
+                this.allSelectedTemplates.Add("Slab", allSlabs);
+                this.allSelectedTemplateValues.Add("Slab", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "NET VOLUME", "TOP AREA", "BOTTOM AREA", "EDGE AREA", "PERIMETER", "OPENING PERIMETER", "ISOLATE" });
+                this.allSelectedTemplates.Add("Styrofoam", allStyrofoams);
+                this.allSelectedTemplateValues.Add("Styrofoam", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "GROSS VOLUME", "ISOLATE" });
+                this.allSelectedTemplates.Add("Stair", allStairs);
+                this.allSelectedTemplateValues.Add("Stair", new List<string>() { "COUNT", "NAME ABB.", "FLOOR", "VOLUME", "TREAD AREA", "RISER AREA", "TREAD COUNT", "SIDE AREA", "BOTTOM AREA", "ISOLATE" });
+
+                // Generate Combined Value Table
+                //UIMethods.GenerateCombinedTableExpander(this.CombinedConcreteTablePanel, this.allSelectedTemplates,
+                //    this.allSelectedTemplateValues, ObjectSelection_Activated, ObjectDeselection_Activated);
+
+                if (CombinedValuesToggle.IsChecked == true)
+                {
+                    this.DissipatedConcreteTablePanel.Visibility = Visibility.Collapsed;
+                    //this.CombinedConcreteTablePanel.Visibility = Visibility.Visible;
+                }
+
                 else
                 {
-                    Dispatcher.FromThread(newWindowThread).InvokeShutdown();
-                    if (badGeometryCount > 1)
-                    {
-                        MessageBox.Show(String.Format("After pressing the 'OK' button, the model will highlight {0} incompatible geometries in red.", badGeometryCount.ToString()));
-                    }
-                    else
-                    {
-                        MessageBox.Show(String.Format("After pressing the 'OK' button, the model will highlight {0} incompatible geometry in red.", badGeometryCount.ToString()));
-                    }
-
-                    RunQTO.doc.Views.Redraw();
+                    this.DissipatedConcreteTablePanel.Visibility = Visibility.Visible;
+                    //this.CombinedConcreteTablePanel.Visibility = Visibility.Collapsed;
                 }
+
+                // Exports stay enabled even when some objects failed: the measured
+                // objects export normally, the failed ones have no quantities anywhere.
+                this.ExportExcelButton.IsEnabled = true;
+                this.ExportIFC.IsEnabled = true;
+
+                Dispatcher.FromThread(newWindowThread)?.InvokeShutdown();
+
+                if (badGeometryCount > 0)
+                {
+                    RunQTO.doc.Views.Redraw();
+
+                    MessageBox.Show(badGeometryCount.ToString() + " object(s) could not be measured and have NO quantities. " +
+                        "They are highlighted in red and are excluded from all exports.");
+                }
+
+                calculateSucceeded = true;
             }
 
             catch (Exception ex)
             {
-                Dispatcher.FromThread(newWindowThread).InvokeShutdown();
+                Dispatcher.FromThread(newWindowThread)?.InvokeShutdown();
+
+                // The containers were cleared and only partially repopulated, so an
+                // export now would silently miss part of the takeoff.
+                this.ExportExcelButton.IsEnabled = false;
+                this.ExportIFC.IsEnabled = false;
 
                 Logger.Error("Calculate failed.", ex);
 
@@ -937,9 +1366,44 @@ namespace QTO_Tool
             // Format and display the TimeSpan value
             string calculationTime = ts.TotalSeconds.ToString("F6");
 
-            Logger.Info("Calculate finished in " + calculationTime + " s.");
+            Logger.Info("Calculate finished in " + calculationTime + " s. Bad geometry count: " + badGeometryCount + ".");
 
-            MessageBox.Show("Calculation process completed in: " + calculationTime + " seconds!");
+            // The success dialog belongs to a clean run only; a run with failures
+            // already showed its own message, and an aborted run showed the error.
+            if (calculateSucceeded && badGeometryCount == 0)
+            {
+                MessageBox.Show("Calculation process completed in: " + calculationTime + " seconds!");
+            }
+        }
+
+        /// <summary>
+        /// True when the object is a Brep the templates can measure. Curves,
+        /// points, and annotations return false silently; extrusions, meshes,
+        /// and block instances — take-off geometry the checkup deliberately
+        /// left as-is because it was locked — also return false but are counted
+        /// as bad geometry, logged, and painted red, so they cannot silently
+        /// vanish from the exported quantities.
+        /// </summary>
+        private bool IsMeasurableBrep(RhinoObject rhobj, string layerName, ref int badGeometryCount)
+        {
+            if (rhobj.Geometry is Rhino.Geometry.Brep)
+            {
+                return true;
+            }
+
+            if (rhobj.Geometry is Rhino.Geometry.Extrusion || rhobj.Geometry is Rhino.Geometry.Mesh ||
+                rhobj is InstanceObject)
+            {
+                badGeometryCount++;
+
+                Logger.Warn("Calculate: object " + rhobj.Id + " on layer '" + layerName +
+                    "' was left as-is by the checkup (" + rhobj.GetType().Name +
+                    ") and cannot be measured; it has NO quantities.");
+
+                Methods.HighlightBadGeometry(rhobj);
+            }
+
+            return false;
         }
 
         //private void Concrete_Save_Clicked(object sender, RoutedEventArgs e)

@@ -85,6 +85,14 @@ namespace QTO_Tool
             nameAbb = parsedLayerName["C1"] + " " + parsedLayerName["C2"];
 
             var mass_properties = VolumeMassProperties.Compute(this.geometry);
+
+            // Compute returns null for degenerate geometry; without a volume
+            // there is nothing defensible to report for this object.
+            if (mass_properties == null)
+            {
+                throw new InvalidOperationException("The volume could not be computed for this geometry.");
+            }
+
             this.netVolume = Math.Round(mass_properties.Volume * RunQTO.volumeConversionFactor, 2);
 
             Dictionary<string, double> topAndBottomArea = this.TopAndBottomArea(this.geometry, angleThreshold);
@@ -93,7 +101,10 @@ namespace QTO_Tool
 
             this.bottomArea = Math.Round(topAndBottomArea["Bottom Area"], 2);
 
-            if (floorElevations.Count > 0)
+            // The angle threshold can classify every face away from the
+            // down-facing bucket; without a bottom face there is no elevation
+            // to match a floor against.
+            if (floorElevations.Count > 0 && this.downfacingFaceElevations.Count > 0)
             {
                 this.floor = Methods.FindFloor(floorElevations, this.downfacingFaceElevations.Min());
             }
@@ -242,6 +253,15 @@ namespace QTO_Tool
 
         void SidesAndEndAndOpeingArea()
         {
+            // Every quantity below derives from the top-face outline; when the
+            // angle threshold classifies no faces as top faces the object
+            // cannot be measured. This also guards the Max() below and the
+            // topFaces[0] accesses.
+            if (this.topFaces.Count == 0)
+            {
+                throw new InvalidOperationException("No top faces were found at the current angle threshold; the object could not be measured.");
+            }
+
             Rhino.Geometry.Plane projectPlane = new Rhino.Geometry.Plane(new Point3d(0, 0, this.upfacingFaceElevations.Max()), Vector3d.ZAxis);
             List<Curve> boundaries = new List<Curve>();
 
@@ -301,7 +321,15 @@ namespace QTO_Tool
 
                     projectedBreps.Add(projectedBrep);
                 }
-                Brep joinedBrep = Brep.JoinBreps(projectedBreps, RunQTO.doc.ModelAbsoluteTolerance)[0];
+                Brep[] joinedProjectedBreps = Brep.JoinBreps(projectedBreps, RunQTO.doc.ModelAbsoluteTolerance);
+
+                // JoinBreps returns null when nothing could be joined.
+                if (joinedProjectedBreps == null || joinedProjectedBreps.Length == 0)
+                {
+                    throw new InvalidOperationException("The projected top faces could not be joined into an outline.");
+                }
+
+                Brep joinedBrep = joinedProjectedBreps[0];
 
                 joinedBrep.MergeCoplanarFaces(RunQTO.doc.ModelAbsoluteTolerance);
 
@@ -347,8 +375,16 @@ namespace QTO_Tool
 
                 Point3d offsetDirectionPoint = pointOnCurve0 + offsetDirection;
 
-                joinedProjectedCenterLine = tempMergedBoundaries[1].Offset(offsetDirectionPoint,
-                  new Vector3d(0, 0, 1), wallThickness / 2, RunQTO.doc.ModelAbsoluteTolerance, CurveOffsetCornerStyle.Sharp)[0];
+                Curve[] offsetCurves = tempMergedBoundaries[1].Offset(offsetDirectionPoint,
+                  new Vector3d(0, 0, 1), wallThickness / 2, RunQTO.doc.ModelAbsoluteTolerance, CurveOffsetCornerStyle.Sharp);
+
+                // Offset returns null when it fails; without it there is no centerline.
+                if (offsetCurves == null || offsetCurves.Length == 0)
+                {
+                    throw new InvalidOperationException("The centerline offset failed for the outer boundary.");
+                }
+
+                joinedProjectedCenterLine = offsetCurves[0];
             }
 
             else
@@ -385,8 +421,16 @@ namespace QTO_Tool
 
                     Point3d offsetDirectionPoint = pointOnCurve0 + offsetDirection;
 
-                    joinedProjectedCenterLine = mergedBoundarySegmentsSorted[1].Item1.Offset(offsetDirectionPoint,
-                      new Vector3d(0, 0, 1), wallThickness / 2, RunQTO.doc.ModelAbsoluteTolerance, CurveOffsetCornerStyle.Sharp)[0];
+                    Curve[] offsetCurves = mergedBoundarySegmentsSorted[1].Item1.Offset(offsetDirectionPoint,
+                      new Vector3d(0, 0, 1), wallThickness / 2, RunQTO.doc.ModelAbsoluteTolerance, CurveOffsetCornerStyle.Sharp);
+
+                    // Offset returns null when it fails; without it there is no centerline.
+                    if (offsetCurves == null || offsetCurves.Length == 0)
+                    {
+                        throw new InvalidOperationException("The centerline offset failed for the longest boundary segment.");
+                    }
+
+                    joinedProjectedCenterLine = offsetCurves[0];
                 }
                 else
                 {
@@ -457,8 +501,18 @@ namespace QTO_Tool
                         .First()
                         .Key;
 
-                    Curve curveOffset1 = mergedBoundary.Offset(Rhino.Geometry.Plane.WorldXY, wallThickness * 0.45, RunQTO.doc.ModelAbsoluteTolerance, CurveOffsetCornerStyle.Sharp)[0];
-                    Curve curveOffset2 = mergedBoundary.Offset(Rhino.Geometry.Plane.WorldXY, wallThickness * -0.45, RunQTO.doc.ModelAbsoluteTolerance, CurveOffsetCornerStyle.Sharp)[0];
+                    Curve[] offsetCurves1 = mergedBoundary.Offset(Rhino.Geometry.Plane.WorldXY, wallThickness * 0.45, RunQTO.doc.ModelAbsoluteTolerance, CurveOffsetCornerStyle.Sharp);
+                    Curve[] offsetCurves2 = mergedBoundary.Offset(Rhino.Geometry.Plane.WorldXY, wallThickness * -0.45, RunQTO.doc.ModelAbsoluteTolerance, CurveOffsetCornerStyle.Sharp);
+
+                    // Offset returns null when it fails; without both offsets the
+                    // centerline candidates cannot be built.
+                    if (offsetCurves1 == null || offsetCurves1.Length == 0 || offsetCurves2 == null || offsetCurves2.Length == 0)
+                    {
+                        throw new InvalidOperationException("The boundary offsets used to find the centerline failed.");
+                    }
+
+                    Curve curveOffset1 = offsetCurves1[0];
+                    Curve curveOffset2 = offsetCurves2[0];
 
                     Curve mergedBoundaryOffset;
 
@@ -554,13 +608,28 @@ namespace QTO_Tool
                         }
                     }
 
-                    joinedProjectedCenterLine = Curve.JoinCurves(centerLines)[0];
+                    Curve[] joinedCenterLines = Curve.JoinCurves(centerLines);
+
+                    // Irregular outlines can leave no centerline candidate at all;
+                    // nothing downstream can be measured without one.
+                    if (joinedCenterLines == null || joinedCenterLines.Length == 0)
+                    {
+                        throw new InvalidOperationException("No centerline could be built from the outline.");
+                    }
+
+                    joinedProjectedCenterLine = joinedCenterLines[0];
 
                     joinedProjectedCenterLine = joinedProjectedCenterLine.Extend(CurveEnd.Both, wallThickness, CurveExtensionStyle.Line);
 
                     intersectionEvents = Rhino.Geometry.Intersect.Intersection.CurveCurve(joinedProjectedCenterLine, mergedBoundary, RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAbsoluteTolerance);
 
-                    joinedProjectedCenterLine.Trim(intersectionEvents[0].ParameterA, intersectionEvents[1].ParameterA);
+                    // Fewer than two boundary hits leaves nothing to trim between;
+                    // the extended centerline is still usable, only slightly long
+                    // at the ends.
+                    if (intersectionEvents != null && intersectionEvents.Count >= 2)
+                    {
+                        joinedProjectedCenterLine.Trim(intersectionEvents[0].ParameterA, intersectionEvents[1].ParameterA);
+                    }
                 }
             }
 
@@ -574,10 +643,29 @@ namespace QTO_Tool
             Point3d[] intersectionPoints;
 
             //Calculate Length
+            bool lengthMeasured = false;
+
             foreach (Brep topFace in this.topFaces)
             {
                 Rhino.Geometry.Intersect.Intersection.BrepBrep(topFace, centerLineExtrusion, RunQTO.doc.ModelAbsoluteTolerance, out intersectionCurves, out intersectionPoints);
-                this.length += Math.Round(Curve.JoinCurves(intersectionCurves)[0].GetLength(), 2);
+
+                Curve[] joinedIntersectionCurves = Curve.JoinCurves(intersectionCurves);
+
+                // A top face that misses the centerline extrusion contributes no
+                // length instead of failing the whole object.
+                if (joinedIntersectionCurves != null && joinedIntersectionCurves.Length > 0)
+                {
+                    this.length += Math.Round(joinedIntersectionCurves[0].GetLength(), 2);
+                    lengthMeasured = true;
+                }
+            }
+
+            // Every top face missing the centerline means the reconstructed
+            // centerline does not represent this solid; flag the object instead
+            // of exporting a silent zero length.
+            if (!lengthMeasured)
+            {
+                throw new InvalidOperationException("BeamTemplate: no top face intersects the reconstructed centerline; length cannot be measured.");
             }
 
             //Side and Edges Calculation
@@ -621,11 +709,31 @@ namespace QTO_Tool
 
             joinedSideFaces = Brep.JoinBreps(this.sideFaces, RunQTO.doc.ModelAbsoluteTolerance);
 
-            this.sideArea_1 = Math.Round(joinedSideFaces[0].GetArea(), 2);
-            this.sideArea_2 = Math.Round(joinedSideFaces[1].GetArea(), 2);
+            // Irregular sections (curb-and-gutter profiles, ...) can join every
+            // side face into a single shell, and JoinBreps returns null when
+            // there are no side faces at all; only the shells that actually
+            // exist contribute side areas.
+            if (joinedSideFaces == null)
+            {
+                joinedSideFaces = new Brep[0];
+            }
 
-            double noHoleSideArea_1 = Math.Round(joinedSideFaces[0].RemoveHoles(RunQTO.doc.ModelAbsoluteTolerance).GetArea(), 2);
-            double noHoleSideArea_2 = Math.Round(joinedSideFaces[1].RemoveHoles(RunQTO.doc.ModelAbsoluteTolerance).GetArea(), 2);
+            double noHoleSideArea_1 = 0;
+            double noHoleSideArea_2 = 0;
+
+            if (joinedSideFaces.Length > 0)
+            {
+                this.sideArea_1 = Math.Round(joinedSideFaces[0].GetArea(), 2);
+
+                noHoleSideArea_1 = Math.Round(joinedSideFaces[0].RemoveHoles(RunQTO.doc.ModelAbsoluteTolerance).GetArea(), 2);
+            }
+
+            if (joinedSideFaces.Length > 1)
+            {
+                this.sideArea_2 = Math.Round(joinedSideFaces[1].GetArea(), 2);
+
+                noHoleSideArea_2 = Math.Round(joinedSideFaces[1].RemoveHoles(RunQTO.doc.ModelAbsoluteTolerance).GetArea(), 2);
+            }
 
             this.openingArea = Math.Round(((noHoleSideArea_1 + noHoleSideArea_2) - (this.sideArea_1 + this.sideArea_2)) / 2, 2);
         }
@@ -647,9 +755,29 @@ namespace QTO_Tool
             brepFaces.AddRange(this.bottomFaces);
             brepFaces.AddRange(this.endFaces);
 
-            grossVolumeGeometry = Brep.JoinBreps(brepFaces, RunQTO.doc.ModelAbsoluteTolerance)[0];
+            Brep[] joinedGrossVolumeBreps = Brep.JoinBreps(brepFaces, RunQTO.doc.ModelAbsoluteTolerance);
+
+            // When the classified faces cannot be joined back into one shell the
+            // gross volume cannot be rebuilt; the net volume (openings included)
+            // is the closest defensible value.
+            if (joinedGrossVolumeBreps == null || joinedGrossVolumeBreps.Length == 0)
+            {
+                Logger.Warn("BeamTemplate: gross volume fell back to net volume for object " + this.id + " (classified faces could not be rejoined).");
+
+                return this.netVolume;
+            }
+
+            grossVolumeGeometry = joinedGrossVolumeBreps[0];
 
             var mass_properties = VolumeMassProperties.Compute(grossVolumeGeometry);
+
+            // Compute returns null for degenerate geometry.
+            if (mass_properties == null)
+            {
+                Logger.Warn("BeamTemplate: gross volume fell back to net volume for object " + this.id + " (gross volume not computable).");
+
+                return this.netVolume;
+            }
 
             result = Math.Round(mass_properties.Volume * RunQTO.volumeConversionFactor, 2);
 

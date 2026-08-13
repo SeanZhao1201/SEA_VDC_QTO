@@ -15,18 +15,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Required by the dynamic dispatch on embedded Excel COM types; not part of
-         the implicit net48 reference set. -->
-    <Reference Include="Microsoft.CSharp" />
-  </ItemGroup>
-
-  <ItemGroup>
     <!-- Build-time reference assemblies so net48 compiles on machines without the
          .NET Framework targeting pack (dotnet build locally and on CI). -->
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
-    <!-- Interop types are embedded (see the EmbedExcelInteropTypes target below),
-         so the PIA itself is not needed at runtime. -->
-    <PackageReference Include="Microsoft.Office.Interop.Excel" Version="15.0.4795.1001" EmbedInteropTypes="true" ExcludeAssets="runtime" />
+    <!-- Excel export writes the workbook directly from the embedded template.
+         Desktop Excel is not required and is never launched. -->
+    <PackageReference Include="ClosedXML" Version="0.105.1" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="RhinoCommon" Version="7.28.23058.3001" />
     <PackageReference Include="Xbim.Common" Version="6.1.605" />
@@ -50,17 +44,5 @@
     <Resource Include="Resources\Excel\template.xlsx" />
     <Resource Include="Resources\Images\ProgressImage.png" />
   </ItemGroup>
-
-  <!-- The WPF markup-compile pass builds a temporary project that drops
-       EmbedInteropTypes metadata from PackageReference items, which breaks the
-       dynamic dispatch ExcelMethods.cs relies on. Stamping the resolved
-       reference after ResolveAssemblyReferences covers both compile passes. -->
-  <Target Name="EmbedExcelInteropTypes" AfterTargets="ResolveAssemblyReferences">
-    <ItemGroup>
-      <ReferencePath Condition="'%(ReferencePath.FileName)' == 'Microsoft.Office.Interop.Excel'">
-        <EmbedInteropTypes>true</EmbedInteropTypes>
-      </ReferencePath>
-    </ItemGroup>
-  </Target>
 
 </Project>

@@ -13,13 +13,13 @@ Status of running this Rhino 7 plugin on Rhino 8, based on a full audit of the c
 - Rhino 8 on Windows runs **.NET Core by default** (.NET 7 up to 8.19, .NET 8 from 8.20). Under Core, `app.config` binding redirects are ignored.
 - Riskiest dependency stack **was** xBIM 5.1 (net47) + Microsoft.Extensions 2.1.1 — the classic assembly-version-conflict class of failure (`FileLoadException`) under Core, since the out-of-support 2.1.1 set is the version most likely to lose a first-load-wins race against another plugin. **Resolved by the xBIM 6.1.605 upgrade** (August 2026): the Microsoft.Extensions.\* closure now resolves at 8.0.x/10.0.x, and the Configuration/Logging-implementation packages disappear entirely. See "xBIM 6.1 upgrade" below.
 - If IFC export fails on Rhino 8, the supported workaround is the `SetDotNetRuntime` command → `NETFramework` → restart (or launch with `/netfx`). Treat this as an escape hatch for Rhino 8 only, not a strategy — `/netfx` is deprecated in Rhino 9.
-- Excel export constraints are environmental, not Rhino-8-related: desktop Excel must be installed and `C:\Temp` must exist.
+- Excel export no longer has environmental constraints: since the ClosedXML rewrite (August 2026) the workbook is written directly from the embedded template, with no desktop Excel and no temp file.
 - The dormant in-plugin MySQL export (MySql.Data and its dependency chain) was removed outright in issue #3 Phase 1, along with `app.config` — whose binding redirects only served that dead chain and were ignored under Core anyway.
-- WPF and Excel COM interop work normally on the Windows Desktop Core runtime.
+- WPF works normally on the Windows Desktop Core runtime. Excel COM is no longer used at all, which removes the largest .NET Core migration risk in the codebase: the old `ExcelMethods.cs` acquired 200+ runtime callable wrappers and never called `Marshal.ReleaseComObject`, and .NET Core has no AppDomain unload to reap them.
 
 ## Rhino 8 for Mac
 
-Hard no, in any configuration: Rhino 8 Mac is Core-only (no netfx fallback), and the plugin depends on WPF, WinForms dialogs, Excel COM, and hardcoded Windows paths — none of which exist on Mac. Mac support would mean a rewrite of the UI (Eto.Forms) and the Excel export.
+Hard no, in any configuration: Rhino 8 Mac is Core-only (no netfx fallback), and the plugin depends on WPF, WinForms dialogs, and hardcoded Windows paths — none of which exist on Mac. Mac support would mean a rewrite of the UI (Eto.Forms). The Excel export is no longer a blocker there: ClosedXML is cross-platform.
 
 ## Installer
 

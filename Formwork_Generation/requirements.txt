@@ -1,0 +1,8 @@
+# Runtime dependencies for formwork_gen.py (Python 3.11+).
+# The generator itself is otherwise stdlib-only.
+ifcopenshell>=0.8      # read slab geometry + author the output IFC4
+shapely>=2.0           # footprint tracing (polygon union) + prop-grid clipping
+numpy>=1.24            # mesh vertex math
+
+# Dev / test only:
+pytest>=7.0            # runs test_formwork_gen.py

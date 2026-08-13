@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Windows-only Rhino 7 plugin (`QTO_Tool`) for concrete quantity takeoff: it validates solid geometry in a Rhino model, computes per-element quantities (volumes, face areas, lengths) from Breps, groups elements by floor, and exports to Excel and IFC. The solution also contains `Turner_Seattle_VDC_Server`, an unrelated standalone WPF app (SDK-style, net472) that reads QTO Excel output into MySQL — it does not reference the plugin project.
 
+The repo also holds **`Formwork_Generation/`**, a Python module that generates soffit formwork, shoring and pour-break splits. It is **decoupled by design** — see "Formwork_Generation" below. It has its own `CLAUDE.md`; read that one before working in that subtree.
+
 The old compiled installer (`QTO_Tool_Setup/`, an Inno Setup exe with no source, Rhino 6-era) was removed from the repo in July 2026 and survives only in git history. Distribution is the GitHub Release zip produced by CI; a yak package is planned (issue #3).
 
 ## Build
@@ -42,6 +44,48 @@ Two behaviours the COM version got from live Excel and this one must do explicit
 **UI plumbing**: `UIMethods.cs` (~1400 lines) builds all result tables as WPF grids in code. Table row toggle buttons sync selection with the Rhino viewport through the static `RhinoDoc.SelectObjects`/`DeselectObjects` events (subscribed in `StartCheckup_Clicked`, never unsubscribed — reopening the window stacks handlers).
 
 **Dormant code**: save/load of calculated data and the "Exterior" checkup branch are commented out or empty. The old in-plugin MySQL export (`MySqlMethods.cs`, `Send_To_MySql`) was removed in issue #3 Phase 1 — MySQL ingestion lives in `Turner_Seattle_VDC_Server`; if it is ever revived in the plugin, use MySqlConnector rather than MySql.Data.
+
+## Formwork_Generation
+
+Python module (~3,100 lines) that consumes QTO output and emits temporary works:
+soffit platforms + shoring props (`rhino/formwork_gen_rhino.py`, runs inside Rhino),
+pour-break slab splitting (`rhino/split_pourbreaks.py`), and IFC writers
+(`formwork_ifc_from_json.py`, `patch_ifc_pourbreaks.py`, CPython + ifcopenshell).
+Details, invariants and the IFC contract: `Formwork_Generation/CLAUDE.md`.
+
+**Architecture decision (2026-07-30, still current): formwork stays DECOUPLED from
+the plugin.** The dependency is one-way — formwork consumes verified solids and floor
+assignments produced by a completed QTO pass; QTO never waits on formwork. Target
+release v1.2, after v1.1 (preview checkup + wizard UX).
+
+**GUI decision (2026-08-12): a separate command and window, not a new tab in `QTOUI`.**
+`RunFormwork` opens its own `FormworkUI`; `QTOUI.xaml` gains only a single button
+(~6 lines, deletable in one hunk). All Python runs in a **second, headless Rhino
+process opened on a `RhinoDoc.WriteFile` copy** of the model, never in the Rhino
+process that owns the user's document. Three facts make the process boundary
+load-bearing rather than stylistic:
+
+- `rhino/formwork_gen_rhino.py` defaults to `"mode": "generate"` (the destructive
+  branch, `doc.Objects.AddBrep`). Process isolation makes that fail-open default
+  harmless — bad geometry lands in a throwaway staged `.3dm`, not the client model.
+- Any `doc.Objects.Add` into the live document fires `OnDocObjectChanged_InvalidateRevert`
+  (`QTOUI.xaml.cs`), which disables REVERT CHECKUP permanently — it is re-enabled at
+  exactly one site, the checkup success path. Ctrl+Z does not bring it back. So there is
+  deliberately **no "place formwork in this model" button**; results are opened in a
+  second Rhino instead.
+- `UIMethods.GenerateLayerTemplate` enumerates `doc.Layers` regardless of lock state, so
+  a `_FORMWORK` layer in the document would grow template-picker rows and pollute the
+  checkup counts. If formwork geometry is ever detected in the document, Start Checkup
+  must be **hard-disabled**, not merely warned about.
+
+Also planned: a freshness stamp written after Calculate (document id + geometry
+fingerprint + floor dictionary) that gates the formwork window. It must validate the
+**floor count separately** — a model where floors were never set fingerprints as a
+perfect match while the whole take-off is bucketed under `"-"`, so a green light there
+would be actively misleading.
+
+`_FORMWORK`-layer objects must never be present during a checkup: the checkup deletes
+and re-adds every object in the document.
 
 ## Progress-report HTML — Turner design language
 

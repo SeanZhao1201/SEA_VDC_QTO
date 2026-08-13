@@ -752,10 +752,15 @@ def write_to_doc(doc, result, params, log):
     return n_added
 
 
-def purge_formwork(doc, log):
+def purge_formwork(doc, log, types=None):
     """Remove GENERATED formwork: only objects stamped with the FW_TYPE user
     string, only layers stamped FW_GENERATED. Anything else that a user put
-    under _FORMWORK is reported and left untouched."""
+    under _FORMWORK is reported and left untouched.
+
+    ``types``: optional FW_TYPE whitelist — the platform generator's
+    auto-purge passes ("platform", "support") so it never eats the side
+    forms/bulkheads that sideform_gen_rhino.py parked in the same tree.
+    None (the explicit purge mode) removes every generated type."""
     doomed_layers = [l for l in doc.Layers
                      if l is not None and not l.IsDeleted
                      and _is_formwork_layer(doc, l.Index)]
@@ -776,7 +781,8 @@ def purge_formwork(doc, log):
                 continue
             if not _is_formwork_layer(doc, obj.Attributes.LayerIndex):
                 continue
-            if obj.Attributes.GetUserString("FW_TYPE"):
+            fw_type = obj.Attributes.GetUserString("FW_TYPE")
+            if fw_type and (types is None or fw_type in types):
                 if doc.Objects.Delete(obj, True):
                     n_obj += 1
             else:
@@ -951,9 +957,10 @@ def main(params=None):
         result = generate_formwork(slabs, obstacles, doc, p, log)
         if p["mode"] == "generate":
             if doc.Layers.FindByFullPath(FW_ROOT, -1) >= 0:
-                log("existing {0} tree found — purging generated content "
-                    "before re-adding".format(FW_ROOT))
-                purge_formwork(doc, log)
+                log("existing {0} tree found — purging generated "
+                    "platforms/supports before re-adding (side forms and "
+                    "bulkheads are left alone)".format(FW_ROOT))
+                purge_formwork(doc, log, ("platform", "support"))
             write_to_doc(doc, result, p, log)
         elif p["mode"] == "export":
             path = p["export_path"] or (

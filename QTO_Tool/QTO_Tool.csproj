@@ -45,4 +45,18 @@
     <Resource Include="Resources\Images\ProgressImage.png" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The formwork Python engines, embedded as LINKS from
+         Formwork_Generation/rhino - one source of truth, no forked copies.
+         FormworkMethods.ExtractScripts() writes them to the staging folder
+         at runtime; logical names must match its Scripts list. -->
+    <EmbeddedResource Include="..\Formwork_Generation\rhino\formwork_gen_rhino.py" Link="Formwork\formwork_gen_rhino.py" LogicalName="QTO_Tool.Formwork.formwork_gen_rhino.py" />
+    <EmbeddedResource Include="..\Formwork_Generation\rhino\sideform_gen_rhino.py" Link="Formwork\sideform_gen_rhino.py" LogicalName="QTO_Tool.Formwork.sideform_gen_rhino.py" />
+    <EmbeddedResource Include="..\Formwork_Generation\rhino\pourbreak_harvest.py" Link="Formwork\pourbreak_harvest.py" LogicalName="QTO_Tool.Formwork.pourbreak_harvest.py" />
+    <EmbeddedResource Include="..\Formwork_Generation\rhino\pourbreak_restore.py" Link="Formwork\pourbreak_restore.py" LogicalName="QTO_Tool.Formwork.pourbreak_restore.py" />
+    <EmbeddedResource Include="..\Formwork_Generation\rhino\split_pourbreaks.py" Link="Formwork\split_pourbreaks.py" LogicalName="QTO_Tool.Formwork.split_pourbreaks.py" />
+    <EmbeddedResource Include="..\Formwork_Generation\rhino\run_on_model.py" Link="Formwork\run_on_model.py" LogicalName="QTO_Tool.Formwork.run_on_model.py" />
+    <EmbeddedResource Include="..\Formwork_Generation\rhino\run_sideforms_on_model.py" Link="Formwork\run_sideforms_on_model.py" LogicalName="QTO_Tool.Formwork.run_sideforms_on_model.py" />
+  </ItemGroup>
+
 </Project>

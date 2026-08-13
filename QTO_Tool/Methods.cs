@@ -49,7 +49,8 @@ namespace QTO_Tool
             return dict;
         }
 
-        internal static void SetChildStatus(QTOUI mw, ChildStatus winChildStatus)
+        // Any plugin window (QTOUI, FormworkUI) can be parented to Rhino.
+        internal static void SetChildStatus(System.Windows.Window mw, ChildStatus winChildStatus)
         {
             switch (winChildStatus)
             {

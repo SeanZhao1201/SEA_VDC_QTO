@@ -114,12 +114,38 @@ namespace QTO_Tool
             }
         }
 
+        // The formwork window is its own command and window by design -
+        // QTOUI only carries this launcher.
+        private void Formwork_Clicked(object sender, RoutedEventArgs e)
+        {
+            RhinoApp.RunScript("_RunFormwork", false);
+        }
+
         private void StartCheckup_Clicked(object sender, RoutedEventArgs e)
         {
             // Clicks queued while a checkup blocked the UI thread must not start
             // a second run on a half-processed document.
             if (this.checkupRunning)
             {
+                return;
+            }
+
+            // The checkup deletes and re-adds EVERY object in the document.
+            // With formwork geometry present that would destroy or double the
+            // generated temporary works and pollute the template picker, so
+            // this is a hard stop, not a warning. Refresh the doc reference
+            // FIRST - the guard must inspect the same document the checkup
+            // below will run on, not a stale one.
+            if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
+            {
+                RunQTO.doc = RhinoDoc.ActiveDoc;
+            }
+            if (FormworkMethods.FormworkGeometryPresent(RunQTO.doc))
+            {
+                this.StartCheckup.IsEnabled = false;
+                MessageBox.Show("Formwork geometry (" + FormworkMethods.FormworkLayer +
+                    " layer) is present in this document. Start Checkup is disabled " +
+                    "until it is removed - purge the formwork or work on a copy.");
                 return;
             }
 
@@ -1343,6 +1369,18 @@ namespace QTO_Tool
                 }
 
                 calculateSucceeded = true;
+
+                // The freshness stamp gates the formwork window: written at
+                // exactly this one site, the completed take-off. Never let a
+                // stamp failure break the calculation itself.
+                try
+                {
+                    FormworkMethods.WriteStamp(RunQTO.doc);
+                }
+                catch (Exception stampEx)
+                {
+                    Logger.Error("Formwork freshness stamp could not be written.", stampEx);
+                }
             }
 
             catch (Exception ex)

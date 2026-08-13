@@ -122,6 +122,41 @@ mid-span; bbox accuracy, a warning not an engineering check), grid offsets
 for axis-parallel segments when a grid is present, and every reverted or
 uncrossed slab with its reason.
 
+## Side forms + bulkheads (v1)
+
+`sideform_gen_rhino.py` emits the **vertical** temporary works: side forms
+along every exposed slab edge (opening/shaft inner loops included) and
+bulkheads on pour-break joints. Prefer running it on the pour-break
+**derived** model — the split pieces carry `POUR` user strings, so joints
+get bulkheads with pour ownership; an unsplit model degrades to pure side
+forms. Per soffit-face loop, samples every 0.25 m classify as:
+
+- **bearing** — a downward ray probed just inside the edge starts inside
+  a solid or hits one within 0.05 m of the soffit: the edge sits on a
+  wall/beam/column, no form (suppressed);
+- **joint** — a probe just outside the edge at mid slab thickness lands
+  inside another slab: a **bulkhead**, emitted once per joint by the
+  lower-pour side (object-id tiebreak), body offset into the later pour;
+- **side** — an exposed face: a side form, soffit to slab top, offset
+  outward by `panel_thickness`, no kicker (placeholder fidelity).
+
+Runs of same-class samples become capped loft panels carrying `FW_TYPE`
+(`side`|`bulkhead`), `FLOOR`, `POUR` and `FW_AREA_M2` — the **net
+formwork contact area**, this module's takeoff quantity (QTO keeps gross;
+per floor `side + bulkhead + shared + suppressed + unclassified == gross`
+is asserted). Modes match the platform generator: `generate` (additive,
+under `_FORMWORK`, re-runs self-purge only side/bulkhead panels),
+`export` (File3dm + JSON, document untouched), `purge`. The combined IFC:
+
+```powershell
+& "$env:LOCALAPPDATA\qto_fwenv\Scripts\python.exe" ..\formwork_ifc_from_json.py `
+    --json <name>_formwork.json --sideforms <name>_sideforms.json --out <name>.ifc
+```
+
+writes all four ObjectTypes (`platform`/`support`/`side`/`bulkhead`);
+side/bulkhead psets carry `AREA_M2` and `POUR` (4D pour filtering is
+pset-based; assemblies stay per-floor).
+
 ## Headless test loop (no Rhino UI)
 
 - `test_headless.py` — synthetic podium scene (partial basement, stepped L1,
@@ -143,6 +178,12 @@ uncrossed slab with its reason.
   copy: v1 JSON → upconvert → restore as curves → harvest → split must
   reproduce the verified 2026-07 result (18 slabs → 36 pieces; per-piece
   pour label, volume and soffit area within 1 %).
+- `test_sideforms_headless.py` — synthetic metric scene for the side-form
+  engine: wall-bearing suppression, opening inner-loop side forms, two
+  pour-deduped bulkheads, area reconciliation, generate/purge round trip,
+  export untouched-doc check.
+- `run_sideforms_on_model.py` — batch side-form export on the open model
+  (open the pour-break derived .3dm for bulkheads with pour ownership).
 
 Both are launched by copying the scripts (and a model copy) to
 `%LOCALAPPDATA%\qto_fw_test\` (short, space-free path) and running:

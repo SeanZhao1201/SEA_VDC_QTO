@@ -45,6 +45,11 @@ formwork for visualization and 4D sequencing, not engineered falsework design
   (synthetic metric scene) and `rhino/test_pourbreaks_model.py` (golden
   regression against the 2026-07 Bellwether result). Details:
   `rhino/README.md`.
+- `rhino/sideform_gen_rhino.py`, `rhino/run_sideforms_on_model.py`,
+  `rhino/test_sideforms_headless.py` — the side-form + bulkhead engine
+  (2026-08-13): edge/opening classification by ray-cast suppression and
+  neighbour probing, net formwork areas, generate/export/purge modes.
+  See the Side forms section below and `rhino/README.md`.
 - `formwork_gen.py` — the legacy IFC-based generator + CLI (Mast4D copy;
   stdlib + ifcopenshell/shapely/numpy). Kept as reference implementation and
   IFC-writing template. Known-wrong on podium floors: one soffit/foot level
@@ -197,12 +202,58 @@ the child Rhino never exits; a child launched with `CreateNoWindow=true` that hi
 dialog — including a licence check for the second seat — hangs invisibly, so a watchdog
 timeout is required, not just a Cancel button.
 
-## Next feature: side forms — scope decided 2026-08-12, geometry not yet designed
+## Side forms — scope decided 2026-08-12, BUILT 2026-08-13
 
-Today the generator emits only the **horizontal** temporary works: a soffit platform
-per slab underside plus shoring props. Side forms are next. The scope and reporting
-decisions below were made 2026-08-12; the detailed geometry design (tolerances,
-sampling, panel params, new invariants) still needs its own session.
+The vertical temporary works now exist: `rhino/sideform_gen_rhino.py`
+(engine + generate/export/purge modes), `rhino/run_sideforms_on_model.py`
+(batch driver), `rhino/test_sideforms_headless.py` (synthetic acceptance
+test), and `formwork_ifc_from_json.py --sideforms` (combined IFC with all
+four ObjectTypes; works standalone too). Verified on the Bellwether
+derived model: 235 side forms + 21 bulkheads, per-floor area
+reconciliation clean, combined IFC with 47 platforms + 1842 supports +
+sides + bulkheads across 18 storeys.
+
+**Hardened by a 29-agent adversarial review (2026-08-13, 18 confirmed
+defects, all fixed):** per-face LOCAL top via an upward ray on the slab's
+own mesh (the whole-brep bbox top inflated thickness on stepped slabs and
+degenerated every probe on split-level ones — the fix recovered 70
+previously-skipped panels on Bellwether); sloped soffits skip loudly with
+the area kept in the books (the flattened-loop model falsely suppressed
+the downhill half — same out-of-scope stance as the platform generator's
+ramps); joint probes test three heights across the face thickness
+(single mid-height probes broke bulkhead dedupe for unequal-thickness
+neighbours); internal soffit-face seams classify explicitly (never
+inherit stale normals into phantom panels); whole-loop runs build closed
+ring solids exported as profile+hole (a slit C-annulus looked solid but
+gapped); straight class-transitions extend to the midpoint while corner
+transitions bill their half-segment without bow-tie geometry; dropped or
+loft-failed runs land in `unclassified_area`; block instances explode
+in-memory reading POUR from the definition parts (QTO's Blockify wraps
+every object — the engine found zero targets on blockified models);
+`fw.purge_formwork` gained a type whitelist so the platform generator's
+auto-purge no longer eats side panels (and vice versa); `doc.Modified`
+is cleared only in headless runs; the IFC writer guards schema-invalid
+empty aggregates and assigns platform holes by representative point.
+
+**Geometry parameters resolved at implementation (2026-08-13):** loops
+sampled every 0.25 m; suppression reuses the props' RayShoot semantics
+(ray from a point probed 0.05 m inside the edge, just below the soffit —
+starting inside a solid or hitting one within 0.05 m suppresses); joint
+detection probes 0.05 m outside the edge at mid slab thickness for
+another slab solid; **one bulkhead per joint**, owned by the lower-pour
+side (object-id tiebreak — the same test catches pour-break siblings AND
+independent abutting slabs); panels are capped lofts offset outward by
+`panel_thickness` (0.05 m), soffit to slab top, no kicker; runs shorter
+than 0.10 m dropped; internal soffit-face seams classify as neither and
+land in `unclassified_area` (no form on a seam — correct, but the area
+still reconciles). 4D pour grouping is **pset-only** (`POUR` in
+QTO Properties; assemblies stay per-floor) — Synchro search sets filter
+on properties, and this avoided restructuring the assembly tree.
+**Reconciliation invariant** per floor: `side + bulkhead + shared(joint
+ceded to the neighbour) + suppressed + unclassified == gross` (loop
+perimeter × thickness), asserted in the test and warned on at runtime.
+
+The original 2026-08-12 decision record follows.
 
 What already exists and is directly reusable:
 

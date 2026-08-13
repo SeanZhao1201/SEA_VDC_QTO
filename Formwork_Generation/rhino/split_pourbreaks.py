@@ -1,14 +1,44 @@
 #! python 2
 # -*- coding: utf-8 -*-
-"""Split structural deck slabs at the approved Option-1 pour breaks.
+"""Split structural deck slabs at authored pour breaks (schema v2).
 
 Runs headless on a STAGED COPY of the model (never the original):
     Rhino.exe <staged copy>.3dm /nosplash
         /runscript="-_RunPythonScript <this file>"
-Reads pour_breaks_model.json (feet, model world coords), splits every
-SLAB_PT_* brep crossed by its floor's cut lines, tags pieces POUR1/POUR2 on
-suffixed layers, and WriteFile()s a NEW derived .3dm — the opened copy is
-never saved. Report: pourbreak_report.json (volumes, soffit areas, outlines).
+
+Reads the pour-break JSON written by ``pourbreak_harvest.py`` (schema v2:
+free-orientation plan polylines with jogs, text-dot pour markers); the
+PDF-era schema v1 (axis-aligned ``dir``/``pos_ft``/``span_ft`` cuts) is
+upconverted in memory, so historical break sets keep working. Splits
+every matching slab crossed by its floor's breaks, tags pieces
+``POUR<n>`` on suffixed layers with ``POUR`` / ``POUR_FLOOR`` /
+``SOURCE_SLAB`` user strings, and ``WriteFile()``s a NEW derived .3dm —
+the opened copy is never saved.
+
+Pour numbering: a piece inherits the pour number of the text-dot marker
+in its region — regions are side-key cells over the floor's break
+polylines, so pieces of different slabs on the same side of a break share
+one pour, exactly as a pour does on site. Cells without a marker fall
+back to v1 binary semantics when the floor has exactly one marker
+(everything else is pour 2), else to deterministic centroid-ordered
+numbering with a warning to add dots.
+
+Unit handling: coordinates are model units (the JSON records which; a
+mismatch aborts — the model's unit system changed since harvest).
+Constants are metres, converted at runtime — feet models are no longer
+special-cased.
+
+Paths: ``PB_JSON`` / ``PB_OUT3DM`` / ``PB_REPORT`` env vars, defaulting
+to ``<doc folder>/<doc name>_pourbreaks.json`` / ``..._pourbreaks.3dm`` /
+``..._pourbreak_report.json`` (the staged copy lives in the staging
+folder, so defaults land there on staged runs).
+
+The report is the engineer-facing review artifact: per-pour soffit area
+and volume (plus CY on feet models) against the optional ``target_area``,
+minimum distance from each break to the vertical supports below it
+(construction joints belong near mid-span — flagged, never blocked),
+axis-parallel grid offsets when a grid is present, and every reverted or
+uncrossed slab with its reason.
 """
 from __future__ import division, print_function
 
@@ -21,52 +51,259 @@ import traceback
 
 STAGE = os.path.join(os.environ.get("LOCALAPPDATA", ""), "qto_fw_test")
 sys.path.insert(0, STAGE)
-BREAKS = os.path.join(STAGE, "pour_breaks_model.json")
-OUT3DM = os.path.join(STAGE, "Bellwether_R7_pourbreaks.3dm")
-REPORT = os.path.join(STAGE, "pourbreak_report.json")
 
 import Rhino
-from Rhino.Geometry import (AreaMassProperties, Brep, LineCurve, Point3d,
-                            Surface, Vector3d, VolumeMassProperties)
+import System
+from Rhino.Geometry import (AreaMassProperties, Brep, LoftType, Point3d,
+                            PolylineCurve, VolumeMassProperties)
 
 import formwork_gen_rhino as fw
+from pourbreak_harvest import is_pb_layer
 
-EXTENSIONS = (15.0, 60.0, 150.0)     # progressive cut-line extension, ft
+PARAMS = {
+    "slab_layer_keyword": "slab",           # first '_' segment must contain
+    "slab_layer_exclude": ["sog", "topping"],
+    "extensions_m": (5.0, 20.0, 50.0),      # progressive end extension
+    "min_dir_m": 0.05,                      # end-direction sampling chord —
+                                            # snap-noise micro segments must
+                                            # not steer the extension
+    "support_warn_m": 1.0,                  # break-to-support flag distance
+    "support_band_m": 0.3,                  # support top within +/- of soffit
+    "support_rise_m": 1.0,                  # support extends this far down
+    "sliver_frac": 0.01,                    # smaller piece -> tangent cut
+                                            # (kept if a pour dot sits in it —
+                                            # authored small pours are legal)
+    "volume_tol_frac": 0.01,                # pieces must sum to the original
+}
+
+_UNIT_ALIASES = {"ft": "feet", "foot": "feet", "feet": "feet",
+                 "in": "inches", "inch": "inches", "inches": "inches",
+                 "m": "meters", "meter": "meters", "meters": "meters",
+                 "mm": "millimeters", "millimeter": "millimeters",
+                 "millimeters": "millimeters",
+                 "cm": "centimeters", "centimeter": "centimeters",
+                 "centimeters": "centimeters"}
 
 
-def cutter_brep(cut, ext, z0, z1):
-    a, b = cut["span_ft"][0] - ext, cut["span_ft"][1] + ext
-    p = cut["pos_ft"]
-    if cut["dir"] == "NS":
-        line = LineCurve(Point3d(p, a, z0), Point3d(p, b, z0))
-    else:
-        line = LineCurve(Point3d(a, p, z0), Point3d(b, p, z0))
-    srf = Surface.CreateExtrusion(line, Vector3d(0, 0, z1 - z0))
-    return Brep.TryConvertBrep(srf)
+def units_match(json_units, doc, log):
+    ju = _UNIT_ALIASES.get((json_units or "").strip().lower(),
+                           (json_units or "").strip().lower())
+    du = str(doc.ModelUnitSystem).lower()
+    if not ju:
+        log("WARNING: breaks JSON has no units field — assuming it matches "
+            "the model ({0})".format(doc.ModelUnitSystem))
+        return True
+    if ju != du:
+        log("ERROR: breaks JSON is in '{0}' but the model is {1} — "
+            "coordinates would be wrong. Re-harvest from this model."
+            .format(json_units, doc.ModelUnitSystem))
+        return False
+    return True
 
 
-def side_key(cuts, x, y):
-    return tuple((x if c["dir"] == "NS" else y) > c["pos_ft"] for c in cuts)
+def upconvert_v1(data, log=None):
+    """Schema v1 (PDF-era axis-aligned cuts) -> schema v2 in memory.
+
+    A v1 cut is a two-point polyline; ``pour1_centroid_ft`` becomes a
+    pour-1 marker; ``pdf_sf`` becomes ``target_area``. ``z`` is null (v1
+    had no curve elevation) — consumers resolve it from the floor.
+    """
+    if data.get("version", 1) >= 2:
+        return data
+    floors = {}
+    for fl, cfg in data.get("floors", {}).items():
+        breaks = []
+        for i, cut in enumerate(cfg.get("cuts", [])):
+            a, b = cut["span_ft"]
+            pos = cut["pos_ft"]
+            if cut["dir"] == "NS":
+                poly = [[pos, a], [pos, b]]
+            else:
+                poly = [[a, pos], [b, pos]]
+            breaks.append({"id": "{0}-PB{1}".format(fl, i + 1),
+                           "polyline": poly, "z": None,
+                           "curve_type": "polyline", "binding": "floor-key",
+                           "provenance": "v1 cut",
+                           "note": cut.get("note", "")})
+        markers = []
+        cen = cfg.get("pour1_centroid_ft")
+        if cen:
+            markers.append({"pour": 1, "at": [cen[0], cen[1]], "z": None,
+                            "provenance": "v1 pour1_centroid"})
+        floors[fl] = {"breaks": breaks, "pour_markers": markers,
+                      "target_area": cfg.get("pdf_sf")}
+    out = {"version": 2, "units": data.get("units", ""),
+           "source": {"kind": "v1-upconvert"}, "floors": floors}
+    for key in ("grid_x", "grid_y"):
+        if key in data:
+            out[key] = data[key]
+    if log:
+        log("upconverted v1 breaks JSON: {0} floors".format(len(floors)))
+    return out
 
 
-def split_with_cuts(brep, cuts, tol, log, why):
-    """Apply every cut; returns (pieces, ok). Progressive extension per cut,
-    CreateBooleanSplit fallback when capping fails, sliver guard against
-    tangent cuts."""
+# ── cut geometry ───────────────────────────────────────────────────────────
+def _end_direction(ded, tip_index, min_dir):
+    """Unit outward direction at an end of the polyline, sampled over at
+    least ``min_dir`` of chord — a snap-noise micro segment at the tip must
+    not steer the 5–50 m safety extension into a garbage direction."""
+    tip = ded[tip_index]
+    step = -1 if tip_index == 0 else 1
+    inner = None
+    i = tip_index
+    while 0 <= i + step * -1 < len(ded):
+        i += step * -1
+        inner = ded[i]
+        if math.hypot(tip[0] - inner[0], tip[1] - inner[1]) >= min_dir:
+            break
+    d = math.hypot(tip[0] - inner[0], tip[1] - inner[1])
+    if d <= 0:
+        return None
+    return ((tip[0] - inner[0]) / d, (tip[1] - inner[1]) / d)
+
+
+def extend_polyline_xy(xy, ext, min_dir=0.0):
+    """[[x, y]...] with both END segments extended outward by ``ext``.
+
+    Under-drawn break lines still sever their slab; interior jog vertices
+    are untouched. Consecutive duplicate points are dropped, and the
+    extension direction is sampled over ``min_dir`` of chord length so a
+    micro end segment cannot steer it. Returns None for degenerate input.
+    """
+    pts = [(float(p[0]), float(p[1])) for p in xy]
+    ded = [pts[0]]
+    for p in pts[1:]:
+        if math.hypot(p[0] - ded[-1][0], p[1] - ded[-1][1]) > 1e-9:
+            ded.append(p)
+    if len(ded) < 2:
+        return None
+    hd = _end_direction(ded, 0, min_dir)
+    td = _end_direction(ded, len(ded) - 1, min_dir)
+    if hd is None or td is None:
+        return None
+    head = (ded[0][0] + hd[0] * ext, ded[0][1] + hd[1] * ext)
+    tail = (ded[-1][0] + td[0] * ext, ded[-1][1] + td[1] * ext)
+    return [head] + ded + [tail]
+
+
+def cutter_brep(brk, ext, z0, z1, min_dir=0.0):
+    """Vertical cutting Brep: the extended break polyline lofted z0->z1."""
+    xy = extend_polyline_xy(brk["polyline"], ext, min_dir)
+    if xy is None:
+        return None
+    c0 = PolylineCurve([Point3d(x, y, z0) for x, y in xy])
+    c1 = PolylineCurve([Point3d(x, y, z1) for x, y in xy])
+    lofts = Brep.CreateFromLoft([c0, c1], Point3d.Unset, Point3d.Unset,
+                                LoftType.Straight, False)
+    if lofts and len(lofts) == 1:
+        return lofts[0]
+    if lofts and len(lofts) > 1:
+        joined = Brep.JoinBreps(list(lofts), 1e-6)
+        if joined and len(joined) == 1:
+            return joined[0]
+        return lofts[0]
+    ext_geo = Rhino.Geometry.Extrusion.Create(c0, z1 - z0, False)
+    if ext_geo is not None:
+        return ext_geo.ToBrep()
+    return None
+
+
+def side_of(xy, px, py):
+    """Which side of the break polyline the plan point lies on (bool).
+
+    Sign of the cross product against the nearest segment — the polyline
+    generalization of v1's single-coordinate comparison; stable for jogs.
+    """
+    best = None
+    for i in range(len(xy) - 1):
+        ax, ay = float(xy[i][0]), float(xy[i][1])
+        bx, by = float(xy[i + 1][0]), float(xy[i + 1][1])
+        dx, dy = bx - ax, by - ay
+        seg2 = dx * dx + dy * dy
+        if seg2 <= 0:
+            continue
+        t = ((px - ax) * dx + (py - ay) * dy) / seg2
+        t = 0.0 if t < 0 else (1.0 if t > 1 else t)
+        cx, cy = ax + t * dx, ay + t * dy
+        d2 = (px - cx) ** 2 + (py - cy) ** 2
+        if best is None or d2 < best[0]:
+            best = (d2, dx * (py - ay) - dy * (px - ax))
+    return best[1] > 0 if best else True
+
+
+def side_key(breaks, px, py):
+    return tuple(side_of(b["polyline"], px, py) for b in breaks)
+
+
+def point_in_piece(piece, px, py, tol):
+    """Is the plan point inside the solid piece (tested at bbox mid-Z)?"""
+    bb = piece.GetBoundingBox(True)
+    pt = Point3d(px, py, (bb.Min.Z + bb.Max.Z) / 2.0)
+    try:
+        return piece.IsPointInside(pt, tol, False)
+    except Exception:
+        return False
+
+
+def interior_plan_point(piece, tol):
+    """A plan point guaranteed inside the piece.
+
+    A concave piece's volume centroid can fall OUTSIDE it (and across the
+    break, which mislabels its pour) — so verify the centroid and fall
+    back to sampling the largest soffit face for an interior point.
+    """
+    vm = VolumeMassProperties.Compute(piece)
+    if vm is not None and point_in_piece(piece, vm.Centroid.X,
+                                         vm.Centroid.Y, tol):
+        return (vm.Centroid.X, vm.Centroid.Y)
+    cos20 = math.cos(math.radians(20.0))
+    best = None
+    for face, _z in fw.soffit_faces(piece, cos20):
+        amp = AreaMassProperties.Compute(face)
+        if amp is None:
+            continue
+        if best is None or amp.Area > best[1]:
+            best = (face, amp.Area)
+    if best is not None:
+        face = best[0]
+        du, dv = face.Domain(0), face.Domain(1)
+        for n in (3, 7, 13):            # coarse-to-fine domain lattice
+            for i in range(1, n):
+                for j in range(1, n):
+                    u = du.ParameterAt(i / float(n))
+                    v = dv.ParameterAt(j / float(n))
+                    if face.IsPointOnFace(u, v) == \
+                            Rhino.Geometry.PointFaceRelation.Interior:
+                        p = face.PointAt(u, v)
+                        return (p.X, p.Y)
+    if vm is not None:                  # last resort: unverified centroid
+        return (vm.Centroid.X, vm.Centroid.Y)
+    c = piece.GetBoundingBox(True).Center
+    return (c.X, c.Y)
+
+
+# ── splitting (tolerance ladder + boolean fallback + guards, from v1) ──────
+def split_with_breaks(brep, breaks, markers, ext_ladder, params, tol, log,
+                      why, min_dir=0.0):
+    """Apply every break; returns (pieces, ok). Progressive extension per
+    cut, CreateBooleanSplit fallback when capping fails, sliver guard
+    against tangent cuts (waived when a pour dot sits inside the small
+    piece — an authored small pour is legal), volume-conservation guard."""
     bb = brep.GetBoundingBox(True)
     pieces = [brep]
     crossed = False
-    for ci, cut in enumerate(cuts):
+    for ci, brk in enumerate(breaks):
         nxt = []
         for pc in pieces:
             done = None
-            for ext in EXTENSIONS:
-                cutter = cutter_brep(cut, ext, bb.Min.Z - 2, bb.Max.Z + 2)
+            for ext in ext_ladder:
+                cutter = cutter_brep(brk, ext, bb.Min.Z - 2, bb.Max.Z + 2,
+                                     min_dir)
                 if cutter is None:
-                    why.append("cut{0}: no cutter".format(ci))
+                    why.append("{0}: no cutter".format(brk["id"]))
                     continue
-                # doc tolerance can be absurdly tight (1e-5 ft on this
-                # model); Split needs slack to close the section curves.
+                # doc tolerance can be absurdly tight (1e-5 ft on the
+                # Bellwether model); Split needs slack to close sections.
                 for mult in (1.0, 10.0, 100.0):
                     t = tol * mult
                     parts = pc.Split(cutter, t)
@@ -75,8 +312,8 @@ def split_with_cuts(brep, cuts, tol, log, why):
                         if all(c is not None and c.IsSolid for c in capped):
                             done = capped
                             if mult > 1:
-                                why.append("cut{0}: split@tol*{1:g}".format(
-                                    ci, mult))
+                                why.append("{0}: split@tol*{1:g}".format(
+                                    brk["id"], mult))
                             break
                     try:
                         bs = Brep.CreateBooleanSplit(pc, cutter, t)
@@ -84,12 +321,12 @@ def split_with_cuts(brep, cuts, tol, log, why):
                         bs = None
                     if bs and len(bs) >= 2 and all(b.IsSolid for b in bs):
                         done = list(bs)
-                        why.append("cut{0}: boolean@tol*{1:g}".format(
-                            ci, mult))
+                        why.append("{0}: boolean@tol*{1:g}".format(
+                            brk["id"], mult))
                         break
-                    why.append("cut{0}: {2}@{1:g}/x{3:g}".format(
-                        ci, ext, "cap-fail" if parts and len(parts) >= 2
-                        else "no-int", mult))
+                    why.append("{0}: {2}@{1:g}/x{3:g}".format(
+                        brk["id"], ext, "cap-fail" if parts and
+                        len(parts) >= 2 else "no-int", mult))
                 if done is not None:
                     break
             if done is not None:
@@ -105,50 +342,366 @@ def split_with_cuts(brep, cuts, tol, log, why):
     if vol0 and all(vols):
         total = sum(v.Volume for v in vols)
         rel = abs(total - vol0.Volume) / vol0.Volume
-        if rel > 0.01:
+        if rel > params["volume_tol_frac"]:
             why.append("VOLUME MISMATCH {0:.4f}".format(rel))
-            log("    VOLUME MISMATCH {0:.2%} — keeping slab uncut".format(rel))
+            log("    VOLUME MISMATCH {0:.2%} — keeping slab uncut".format(
+                rel))
             return [brep], False
-        if min(v.Volume for v in vols) < 0.01 * vol0.Volume:
-            why.append("tangent cut (sliver piece) — reverted")
-            return [brep], False
+        i_min = min(range(len(vols)), key=lambda i: vols[i].Volume)
+        if vols[i_min].Volume < params["sliver_frac"] * vol0.Volume:
+            authored = any(point_in_piece(pieces[i_min],
+                                          float(mk["at"][0]),
+                                          float(mk["at"][1]), tol * 10)
+                           for mk in (markers or []))
+            if authored:
+                why.append("sub-{0:.0%} piece kept — pour dot inside "
+                           "(authored small pour)".format(
+                               params["sliver_frac"]))
+            else:
+                why.append("tangent cut (sliver piece) — reverted")
+                return [brep], False
     return pieces, True
 
 
-def soffit_area_and_outline(brep, tol, want_outline):
+# ── pour assignment (dot containment first, side-key cells as fallback) ────
+def assign_floor_pours(floor, pieces, breaks, markers, log):
+    """Assign a pour number to every piece dict of one floor (in place).
+
+    Exact first: a piece that CONTAINS a pour dot takes that dot's number
+    — correct for any break shape (concave pieces whose centroid escapes
+    them, notches routed around openings, re-entrant polylines crossing a
+    slab twice). Only pieces without a dot fall back to side-key cells,
+    keyed by a guaranteed-interior point: a cell holding a marker inherits
+    its number; with exactly one marker everything else is pour 2 (v1
+    binary semantics — the golden regression depends on it); otherwise
+    unmatched cells get deterministic unused numbers. Every fallback is
+    summarized in the log — nothing is silent.
+    """
+    for pc in pieces:
+        inside = [mk for mk in markers
+                  if point_in_piece(pc["brep"], float(mk["at"][0]),
+                                    float(mk["at"][1]), pc["tol"])]
+        if len(inside) > 1:
+            log("  WARNING: {0}: one piece contains {1} pour dots — "
+                "keeping {2}".format(floor, len(inside),
+                                     min(mk["pour"] for mk in inside)))
+        if inside:
+            pc["pour"] = min(mk["pour"] for mk in inside)
+            pc["how"] = "dot"
+    unassigned = [pc for pc in pieces if pc.get("pour") is None]
+    if not unassigned:
+        return
+    marker_cells = {}
+    for mk in markers:
+        k = side_key(breaks, float(mk["at"][0]), float(mk["at"][1]))
+        if k not in marker_cells or mk["pour"] < marker_cells[k]:
+            marker_cells[k] = mk["pour"]
+    cells = {}
+    for pc in unassigned:
+        k = side_key(breaks, pc["rep"][0], pc["rep"][1])
+        pc["key"] = k
+        if k not in cells or pc["rep"] < cells[k]:
+            cells[k] = pc["rep"]
+    assigned = {}
+    for k in cells:
+        if k in marker_cells:
+            assigned[k] = marker_cells[k]
+    leftover = sorted([k for k in cells if k not in assigned],
+                      key=lambda k: cells[k])
+    if leftover:
+        if len(markers) == 1:
+            other = 2 if markers[0]["pour"] == 1 else 1
+            for k in leftover:
+                assigned[k] = other
+            log("  note: {0}: {1} region(s) without a dot -> pour {2} "
+                "(single-marker binary rule)".format(
+                    floor, len(leftover), other))
+        else:
+            used = set(mk["pour"] for mk in markers)
+            used.update(assigned.values())
+            nxt = 1
+            for k in leftover:
+                while nxt in used:
+                    nxt += 1
+                assigned[k] = nxt
+                used.add(nxt)
+            if markers:
+                log("  WARNING: {0}: {1} region(s) have no dot — "
+                    "auto-numbered; add dots to author the "
+                    "sequence".format(floor, len(leftover)))
+    n_side = n_auto = 0
+    for pc in unassigned:
+        pc["pour"] = assigned[pc["key"]]
+        if pc["key"] in marker_cells:
+            pc["how"] = "side"
+            n_side += 1
+        else:
+            pc["how"] = "auto"
+            n_auto += 1
+    n_dot = sum(1 for pc in pieces if pc.get("how") == "dot")
+    log("  {0}: pours — {1} by dot, {2} by side cell, {3} auto".format(
+        floor, n_dot, n_side, n_auto))
+
+
+def cy_divisor(unit_system):
+    """Cubic-yard divisor for imperial models — QTO converts both ft and
+    in models to CY, so the report must too. None for metric."""
+    if unit_system == Rhino.UnitSystem.Feet:
+        return 27.0
+    if unit_system == Rhino.UnitSystem.Inches:
+        return 46656.0
+    return None
+
+
+def force_delete(doc, obj, log):
+    """Delete even when the object is hidden, locked, or on a locked
+    layer chain — the staged copy preserves client object state, and a
+    silently failed delete would leave the original slab duplicated
+    beside its pieces in the derived model. Returns success."""
+    if doc.Objects.Delete(obj, True):
+        return True
+    try:
+        layer = doc.Layers[obj.Attributes.LayerIndex]
+        while layer is not None:
+            if layer.IsLocked:
+                layer.IsLocked = False
+            pid = layer.ParentLayerId
+            layer = doc.Layers.FindId(pid) \
+                if pid != System.Guid.Empty else None
+    except Exception:
+        pass
+    try:
+        doc.Objects.Show(obj.Id, True)
+    except Exception:
+        pass
+    try:
+        if obj.Attributes.Mode != Rhino.DocObjects.ObjectMode.Normal:
+            obj.Attributes.Mode = Rhino.DocObjects.ObjectMode.Normal
+            obj.CommitChanges()
+    except Exception:
+        pass
+    return doc.Objects.Delete(obj, True)
+
+
+# ── review metrics ─────────────────────────────────────────────────────────
+def soffit_area(brep, tol):
     cos20 = math.cos(math.radians(20.0))
     area = 0.0
-    outlines = []
     for face, _z in fw.soffit_faces(brep, cos20):
         amp = AreaMassProperties.Compute(face)
         if amp:
             area += amp.Area
-        if want_outline:
-            outer, _inners = fw.face_loops(face, tol)
-            if outer is not None:
-                outlines.append(fw._curve_points_m(outer, 1.0))
-    return area, outlines
+    return area
 
 
-def main():
-    doc = Rhino.RhinoDoc.ActiveDoc
-    tol = doc.ModelAbsoluteTolerance
-    log = fw.Log()
-    if doc.ModelUnitSystem != Rhino.UnitSystem.Feet:
-        log("WARNING: model units {0}, expected Feet — aborting".format(
-            doc.ModelUnitSystem))
-        return
+def collect_support_boxes(doc, log):
+    """Bounding boxes of every solid that could bear under a slab edge.
+    Skips _POURBREAK and _FORMWORK layers. Read-only."""
+    boxes = []
+    for obj in doc.Objects:
+        if obj is None or obj.Attributes is None:
+            continue
+        li = obj.Attributes.LayerIndex
+        if is_pb_layer(doc, li) or fw._is_formwork_layer(doc, li):
+            continue
+        geom = obj.Geometry
+        if isinstance(geom, Rhino.Geometry.Extrusion):
+            geom = geom.ToBrep(True)
+        if isinstance(geom, Brep) and geom.IsSolid:
+            boxes.append(geom.GetBoundingBox(True))
+    log("support scan: {0} candidate solids".format(len(boxes)))
+    return boxes
 
-    data = json.loads(io.open(BREAKS, encoding="utf-8").read())
-    floors_cfg = data["floors"]
+
+def _dist_xy_to_box(px, py, bb):
+    dx = max(bb.Min.X - px, 0.0, px - bb.Max.X)
+    dy = max(bb.Min.Y - py, 0.0, py - bb.Max.Y)
+    return math.hypot(dx, dy)
+
+
+def break_sample_points(brk):
+    """Vertices + segment midpoints of the raw (unextended) polyline."""
+    xy = [(float(p[0]), float(p[1])) for p in brk["polyline"]]
+    pts = list(xy)
+    for i in range(len(xy) - 1):
+        pts.append(((xy[i][0] + xy[i + 1][0]) / 2.0,
+                    (xy[i][1] + xy[i + 1][1]) / 2.0))
+    return pts
+
+
+def min_support_distance(brk, soffit_zs, boxes, band, rise):
+    """Approximate min plan distance from the break to a vertical support
+    whose top reaches ANY of the floor's slab undersides — stepped floors
+    bucket several soffit elevations under one name, and checking only
+    the lowest would miss supports under the higher slabs (bbox-level
+    accuracy — a review warning, not an engineering check)."""
+    best = None
+    for bb in boxes:
+        near = False
+        for sz in set(soffit_zs):
+            if bb.Max.Z < sz - band or bb.Max.Z > sz + band:
+                continue
+            if bb.Min.Z > sz - rise:
+                continue
+            near = True
+            break
+        if not near:
+            continue
+        for px, py in break_sample_points(brk):
+            d = _dist_xy_to_box(px, py, bb)
+            if best is None or d < best:
+                best = d
+    return best
+
+
+def grid_offsets(brk, grid_x, grid_y):
+    """Nearest-grid offset for each axis-parallel segment (informational)."""
+    out = []
+    xy = [(float(p[0]), float(p[1])) for p in brk["polyline"]]
+    for i in range(len(xy) - 1):
+        (ax, ay), (bx, by) = xy[i], xy[i + 1]
+        seg_len = math.hypot(bx - ax, by - ay)
+        if seg_len <= 0:
+            continue
+        if abs(bx - ax) < 0.01 * seg_len and grid_x:
+            pos = (ax + bx) / 2.0
+            name = min(grid_x, key=lambda g: abs(grid_x[g] - pos))
+            out.append({"segment": i, "axis": "x", "grid": name,
+                        "offset": round(pos - grid_x[name], 3)})
+        elif abs(by - ay) < 0.01 * seg_len and grid_y:
+            pos = (ay + by) / 2.0
+            name = min(grid_y, key=lambda g: abs(grid_y[g] - pos))
+            out.append({"segment": i, "axis": "y", "grid": name,
+                        "offset": round(pos - grid_y[name], 3)})
+    return out
+
+
+# ── main pass ──────────────────────────────────────────────────────────────
+def split_document(doc, data, params=None, log=None):
+    """Split every matching slab at its floor's breaks. Returns the report
+    dict, or None on a hard precondition failure. Mutates the document
+    (adds pieces, deletes split originals) — run it on a staged copy."""
+    log = log or fw.Log()
+    p = dict(PARAMS)
+    if params:
+        p.update(params)
+    if not units_match(data.get("units"), doc, log):
+        return None
     floor_elev = fw.read_floor_elevations(doc)
     if not floor_elev:
-        log("no FloorElevations doc string — aborting")
-        return
+        log("ERROR: no FloorElevations doc string — aborting")
+        return None
+    names = list(floor_elev.values())
+    for n in set(names):
+        if names.count(n) > 1:
+            log("WARNING: duplicate floor name '{0}' ({1} elevations) — "
+                "breaks bucket by NAME, so they will apply to every "
+                "same-named level".format(n, names.count(n)))
+    tol = doc.ModelAbsoluteTolerance
+    to_mu = fw.meters_to_model(doc)
+    ext_ladder = [e * to_mu for e in p["extensions_m"]]
+    min_dir = p["min_dir_m"] * to_mu
+    band = p["support_band_m"] * to_mu
+    rise = p["support_rise_m"] * to_mu
+    warn_d = p["support_warn_m"] * to_mu
+    cy_div = cy_divisor(doc.ModelUnitSystem)
 
-    def floor_of(bb_min_z):
-        return floor_elev[min(floor_elev, key=lambda e: abs(e - bb_min_z))]
+    def floor_of(z):
+        return floor_elev[min(floor_elev, key=lambda e: abs(e - z))]
 
+    keyword = p["slab_layer_keyword"].lower()
+    excludes = p.get("slab_layer_exclude") or []
+    targets = []
+    for obj in doc.Objects:
+        if obj is None or obj.Attributes is None:
+            continue
+        li = obj.Attributes.LayerIndex
+        if is_pb_layer(doc, li) or fw._is_formwork_layer(doc, li):
+            continue
+        layer = doc.Layers[li]
+        lname = layer.Name if layer is not None else ""
+        first = lname.split("_")[0].lower()
+        if keyword not in first:
+            continue
+        if any(kw and kw.lower() in lname.lower() for kw in excludes):
+            continue
+        geom = obj.Geometry
+        if isinstance(geom, Rhino.Geometry.Extrusion):
+            geom = geom.ToBrep(True)
+        if isinstance(geom, Brep):
+            targets.append((obj, geom, layer))
+    log("targets: {0} structural deck slabs (keyword '{1}', excludes {2})"
+        .format(len(targets), p["slab_layer_keyword"], excludes))
+
+    floors_cfg = data.get("floors", {})
+    support_boxes = collect_support_boxes(doc, log)
+    grid_x = data.get("grid_x") or {}
+    grid_y = data.get("grid_y") or {}
+
+    report = {"version": 2, "units": str(doc.ModelUnitSystem),
+              "params": {"extensions_m": list(p["extensions_m"]),
+                         "support_warn_m": p["support_warn_m"]},
+              "floors": {}}
+
+    def floor_report(fl):
+        cfg = floors_cfg.get(fl) or {}
+        if fl not in report["floors"]:
+            report["floors"][fl] = {
+                "breaks": [{"id": b["id"], "curve_type": b["curve_type"],
+                            "note": b.get("note", "")}
+                           for b in cfg.get("breaks", [])],
+                "target_area": cfg.get("target_area"),
+                "total_soffit_area": 0.0,
+                "pours": {}, "slabs": []}
+        return report["floors"][fl]
+
+    # pass 1 — split everything, remember pieces; no doc mutation yet
+    pending = []        # (obj, layer, fl, srec, [piece dicts])
+    floor_pieces = {}   # fl -> every piece dict on that floor
+    floor_soffits = {}  # fl -> soffit elevations seen (support review)
+    for obj, brep, layer in targets:
+        bb = brep.GetBoundingBox(True)
+        fl = floor_of(bb.Min.Z)
+        cfg = floors_cfg.get(fl)
+        frep = floor_report(fl)
+        v0 = VolumeMassProperties.Compute(brep)
+        srec = {"layer": layer.Name, "source_id": str(obj.Id),
+                "orig_vol": round(v0.Volume, 1) if v0 else None,
+                "pieces": []}
+        frep["slabs"].append(srec)
+        a0 = soffit_area(brep, tol)
+        frep["total_soffit_area"] = round(
+            frep["total_soffit_area"] + a0, 1)
+        floor_soffits.setdefault(fl, []).append(bb.Min.Z)
+        breaks = (cfg or {}).get("breaks") or []
+        markers = (cfg or {}).get("pour_markers") or []
+        if not breaks:
+            srec["status"] = "no break for floor"
+            continue
+        why = []
+        pieces, ok = split_with_breaks(brep, breaks, markers, ext_ladder,
+                                       p, tol, log, why, min_dir)
+        srec["why"] = why
+        if not ok:
+            srec["status"] = "not crossed"
+            continue
+        srec["status"] = "split into {0}".format(len(pieces))
+        rec_pieces = []
+        for pc in pieces:
+            vm = VolumeMassProperties.Compute(pc)
+            rec = {"brep": pc, "vm": vm, "tol": tol,
+                   "rep": interior_plan_point(pc, tol), "pour": None}
+            rec_pieces.append(rec)
+            floor_pieces.setdefault(fl, []).append(rec)
+        pending.append((obj, layer, fl, srec, rec_pieces))
+
+    # pass 2 — per-floor pour assignment (dot containment, then cells)
+    for fl, pieces in floor_pieces.items():
+        cfg = floors_cfg.get(fl) or {}
+        assign_floor_pours(fl, pieces, cfg.get("breaks") or [],
+                           cfg.get("pour_markers") or [], log)
+
+    # pass 3 — mutate the (staged) document
     def pour_layer(orig_layer, pour):
         name = orig_layer.Name + "_POUR{0}".format(pour)
         for l in doc.Layers:
@@ -161,102 +714,133 @@ def main():
         layer.ParentLayerId = orig_layer.ParentLayerId
         return doc.Layers.Add(layer)
 
-    targets = []
-    for obj in doc.Objects:
-        if obj is None or obj.Attributes is None:
-            continue
-        layer = doc.Layers[obj.Attributes.LayerIndex]
-        lname = (layer.Name if layer else "")
-        low = lname.lower()
-        if not low.split("_")[0].startswith("slab"):
-            continue
-        if "sog" in low or "topping" in low:
-            continue
-        geom = obj.Geometry
-        if isinstance(geom, Rhino.Geometry.Extrusion):
-            geom = geom.ToBrep(True)
-        if isinstance(geom, Brep):
-            targets.append((obj, geom, layer))
-    log("targets: {0} structural deck slabs".format(len(targets)))
-
-    report = {"floors": {}, "grid_x": data["grid_x"],
-              "grid_y": data["grid_y"]}
     n_cut = 0
-    for obj, brep, layer in targets:
-        bb = brep.GetBoundingBox(True)
-        fl = floor_of(bb.Min.Z)
-        cfg = floors_cfg.get(fl)
-        frep = report["floors"].setdefault(fl, {
-            "cuts": cfg["cuts"] if cfg else [],
-            "pdf_sf": cfg["pdf_sf"] if cfg else None, "slabs": []})
-        want_outline = (fl == "L01")
-        v0 = VolumeMassProperties.Compute(brep)
-        srec = {"layer": layer.Name, "orig_vol_cf":
-                round(v0.Volume, 1) if v0 else None, "pieces": []}
-        frep["slabs"].append(srec)
-        if cfg is None:
-            srec["status"] = "no break for floor"
-            a, o = soffit_area_and_outline(brep, tol, want_outline)
-            srec["pieces"].append({"pour": 0, "soffit_sf": round(a, 1),
-                                   "outlines": o if want_outline else []})
+    for obj, layer, fl, srec, rec_pieces in pending:
+        frep = report["floors"][fl]
+        # capture identity/attributes, then delete FIRST — a failed
+        # delete (locked object/layer in the client model, preserved by
+        # staging) must not leave the original duplicated beside pieces
+        base_attr = obj.Attributes.Duplicate()
+        source_id = str(obj.Id)
+        if not force_delete(doc, obj, log):
+            srec["status"] = "SPLIT ABORTED — original not deletable"
+            srec["delete_failed"] = True
+            log("  ERROR: {0}/{1}: original slab could not be deleted — "
+                "pieces NOT added, slab left uncut".format(fl, layer.Name))
             continue
-        why = []
-        pieces, ok = split_with_cuts(brep, cfg["cuts"], tol, log, why)
-        srec["why"] = why
-        if not ok:
-            srec["status"] = "not crossed"
-            a, o = soffit_area_and_outline(brep, tol, want_outline)
-            srec["pieces"].append({"pour": 0, "soffit_sf": round(a, 1),
-                                   "outlines": o if want_outline else []})
-            continue
-        srec["status"] = "split into {0}".format(len(pieces))
-        n_cut += 1
-        pc_cen = cfg.get("pour1_centroid_ft")
-        pour1_key = (side_key(cfg["cuts"], pc_cen[0], pc_cen[1])
-                     if pc_cen else None)
-        for pc in pieces:
-            vm = VolumeMassProperties.Compute(pc)
-            cen = vm.Centroid if vm else pc.GetBoundingBox(True).Center
-            key = side_key(cfg["cuts"], cen.X, cen.Y)
-            pour = 1 if (pour1_key is not None and key == pour1_key) else 2
-            a, o = soffit_area_and_outline(pc, tol, want_outline)
-            attr = obj.Attributes.Duplicate()
+        for rec in rec_pieces:
+            pour = rec["pour"] if rec["pour"] is not None else 0
+            vm = rec["vm"]
+            a = soffit_area(rec["brep"], tol)
+            attr = base_attr.Duplicate()
             attr.LayerIndex = pour_layer(layer, pour)
+            attr.Mode = Rhino.DocObjects.ObjectMode.Normal
             attr.SetUserString("POUR", str(pour))
             attr.SetUserString("POUR_FLOOR", fl)
-            doc.Objects.AddBrep(pc, attr)
-            srec["pieces"].append({
-                "pour": pour,
-                "vol_cf": round(vm.Volume, 1) if vm else None,
-                "soffit_sf": round(a, 1),
-                "centroid": [round(cen.X, 2), round(cen.Y, 2)],
-                "outlines": o if want_outline else []})
-        doc.Objects.Delete(obj, True)
+            attr.SetUserString("SOURCE_SLAB", source_id)
+            doc.Objects.AddBrep(rec["brep"], attr)
+            prec = {"pour": pour,
+                    "vol": round(vm.Volume, 1) if vm else None,
+                    "area": round(a, 1),
+                    "centroid": [round(rec["rep"][0], 2),
+                                 round(rec["rep"][1], 2)],
+                    "assigned_by": rec.get("how", "auto")}
+            if cy_div and vm:
+                prec["vol_cy"] = round(vm.Volume / cy_div, 1)
+            srec["pieces"].append(prec)
+            tot = frep["pours"].setdefault(
+                str(pour), {"area": 0.0, "vol": 0.0})
+            tot["area"] = round(tot["area"] + a, 1)
+            if vm:
+                tot["vol"] = round(tot["vol"] + vm.Volume, 1)
+        n_cut += 1
     log("split {0} slabs".format(n_cut))
 
-    opts = Rhino.FileIO.FileWriteOptions()
-    opts.SuppressDialogBoxes = True
-    ok = doc.WriteFile(OUT3DM, opts)
-    log("derived model -> {0} ({1})".format(OUT3DM, "ok" if ok
-                                            else "WRITE FAILED"))
-    with io.open(REPORT, "w", encoding="utf-8") as fh:
-        fh.write(u"{0}".format(json.dumps(report, indent=1)))
-    log("report -> {0}".format(REPORT))
+    # review metrics per floor
+    for fl, frep in report["floors"].items():
+        cfg = floors_cfg.get(fl) or {}
+        soffit_zs = floor_soffits.get(fl)
+        for brec, brk in zip(frep["breaks"], cfg.get("breaks") or []):
+            if soffit_zs:
+                d = min_support_distance(brk, soffit_zs, support_boxes,
+                                         band, rise)
+                if d is not None:
+                    brec["min_support_dist"] = round(d, 2)
+                    brec["support_flag"] = bool(d < warn_d)
+                    if brec["support_flag"]:
+                        log("  FLAG: {0} {1} runs {2:.2f} units from a "
+                            "vertical support — joints belong near "
+                            "mid-span".format(fl, brk["id"], d))
+            if brk.get("curve_type") == "curve":
+                log("  FLAG: {0} {1} has non-line segments (curved "
+                    "bulkhead)".format(fl, brk["id"]))
+            g = grid_offsets(brk, grid_x, grid_y)
+            if g:
+                brec["grid_offsets"] = g
+        if cy_div:
+            for tot in frep["pours"].values():
+                tot["vol_cy"] = round(tot["vol"] / cy_div, 1)
+        if frep.get("target_area") and frep["total_soffit_area"]:
+            frep["target_ratio"] = round(
+                frep["total_soffit_area"] / frep["target_area"], 3)
+    return report
 
 
-try:
-    main()
-except Exception:
-    with io.open(os.path.join(STAGE, "pourbreak_error.txt"), "w",
-                 encoding="utf-8") as fh:
-        fh.write(u"{0}".format(traceback.format_exc()))
-finally:
+def _doc_base(doc):
+    if doc.Path:
+        return os.path.splitext(doc.Path)[0]
+    return os.path.join(STAGE, "pourbreaks")
+
+
+def main():
+    doc = Rhino.RhinoDoc.ActiveDoc
+    log = fw.Log()
+    log("split_pourbreaks — model units: {0}".format(doc.ModelUnitSystem))
+    base = _doc_base(doc)
+    json_path = os.environ.get("PB_JSON") or base + "_pourbreaks.json"
+    if not os.path.exists(json_path):
+        # No silent fallback to a shared/staging JSON: cutting one
+        # project's slabs at another project's break coordinates would
+        # look like a clean run. Missing input is a hard stop.
+        log("ERROR: no breaks JSON at {0} — run pourbreak_harvest first "
+            "(or point PB_JSON at the intended file)".format(json_path))
+        log.save(base + "_pourbreak_log.txt")
+        return
+    log("breaks <- {0}".format(json_path))
+    data = json.loads(io.open(json_path, encoding="utf-8").read())
+    data = upconvert_v1(data, log)
+    report = split_document(doc, data, None, log)
+    if report is not None:
+        out3dm = os.environ.get("PB_OUT3DM") or base + "_pourbreaks.3dm"
+        opts = Rhino.FileIO.FileWriteOptions()
+        opts.SuppressDialogBoxes = True
+        ok = doc.WriteFile(out3dm, opts)
+        log("derived model -> {0} ({1})".format(
+            out3dm, "ok" if ok else "WRITE FAILED"))
+        report["source_json"] = json_path
+        report_path = os.environ.get("PB_REPORT") \
+            or base + "_pourbreak_report.json"
+        with io.open(report_path, "w", encoding="utf-8") as fh:
+            fh.write(u"{0}".format(json.dumps(report, indent=1,
+                                              sort_keys=True)))
+        log("report -> {0}".format(report_path))
+    log.save(base + "_pourbreak_log.txt")
+
+
+if __name__ == "__main__":
     try:
-        Rhino.RhinoDoc.ActiveDoc.Modified = False
+        main()
     except Exception:
-        pass
-    if os.environ.get("FW_HEADLESS") == "1":
+        with io.open(os.path.join(STAGE, "pourbreak_error.txt"), "w",
+                     encoding="utf-8") as fh:
+            fh.write(u"{0}".format(traceback.format_exc()))
+    finally:
         try:
-            Rhino.RhinoApp.Exit()
+            Rhino.RhinoDoc.ActiveDoc.Modified = False
         except Exception:
-            Rhino.RhinoApp.RunScript("_-Exit", False)
+            pass
+        if os.environ.get("FW_HEADLESS") == "1":
+            try:
+                Rhino.RhinoApp.Exit()
+            except Exception:
+                Rhino.RhinoApp.RunScript("_-Exit", False)

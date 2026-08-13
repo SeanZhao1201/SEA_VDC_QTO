@@ -45,7 +45,7 @@ Every `RunQTO` session writes a log file (`QTO_<date>_<time>.log`) to a `Logs` s
 
 ## IFC export details
 
-- Schema: IFC4, written with [xBIM Essentials](https://github.com/xBimTeam/XbimEssentials) 5.1.
+- Schema: IFC4, written with [xBIM Essentials](https://github.com/xBimTeam/XbimEssentials) 6.1.
 - Spatial structure: `IfcProject` (named after the `.3dm` file) → `IfcSite` ("Site") → `IfcBuilding` ("Building") → one `IfcBuildingStorey` per floor defined in the elevation input, ordered by elevation. Elements that have no floor assignment are contained in a fallback storey named `Unassigned`.
 - Storey `Elevation` values are converted from the Rhino model unit to millimeters, matching the exported geometry (the IFC length unit is the millimeter).
 - Geometry: tessellated `IfcFaceBasedSurfaceModel` render meshes with layer color, in absolute world coordinates.

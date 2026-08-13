@@ -29,9 +29,9 @@
     <PackageReference Include="Microsoft.Office.Interop.Excel" Version="15.0.4795.1001" EmbedInteropTypes="true" ExcludeAssets="runtime" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="RhinoCommon" Version="7.28.23058.3001" />
-    <PackageReference Include="Xbim.Common" Version="5.1.341" />
-    <PackageReference Include="Xbim.Ifc" Version="5.1.341" />
-    <PackageReference Include="Xbim.Ifc4" Version="5.1.341" />
+    <PackageReference Include="Xbim.Common" Version="6.1.605" />
+    <PackageReference Include="Xbim.Ifc" Version="6.1.605" />
+    <PackageReference Include="Xbim.Ifc4" Version="6.1.605" />
   </ItemGroup>
 
   <ItemGroup>

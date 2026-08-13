@@ -12,8 +12,9 @@ The old compiled installer (`QTO_Tool_Setup/`, an Inno Setup exe with no source,
 
 - `QTO_Tool.csproj` is SDK-style WPF targeting net48 with `PackageReference`: build with `dotnet build QTO_Tool\QTO_Tool.csproj -c Release` on Windows (any .NET 8+ SDK; the `Microsoft.NETFramework.ReferenceAssemblies` package supplies the net48 targeting pack, so nothing else needs to be installed). Output goes to `QTO_Tool\bin\<Configuration>\net48\`. Windows-only: on a Mac you can edit code but not compile or run it (the Windows Desktop SDK rejects `UseWPF` builds on non-Windows with NETSDK1100).
 - `<TargetExt>.rhp</TargetExt>` names the output assembly `QTO_Tool.rhp` (the Rhino plugin extension) directly — there is no post-build rename. Load it in Rhino via Options > Plug-ins, then run the `RunQTO` command.
-- Excel COM interop types are embedded via the `EmbedExcelInteropTypes` target in the csproj (not via PackageReference metadata) because the WPF markup-compile temp project drops `EmbedInteropTypes` metadata from PackageReference items — don't "simplify" this away, and keep the explicit `Microsoft.CSharp` reference that the resulting dynamic dispatch needs.
+- The Excel export uses **ClosedXML**, not Excel COM automation: desktop Excel is not required and is never launched. The old `EmbedExcelInteropTypes` csproj target, the `Microsoft.Office.Interop.Excel` PIA and the explicit `Microsoft.CSharp` reference it needed are all gone — do not reintroduce them.
 - References RhinoCommon 7.28 (Rhino 7). It also loads in Rhino 8 on Windows (fallback if IFC export misbehaves there: `SetDotNetRuntime` > NETFramework), never on Rhino 8 for Mac. Full assessment and the stale-installer situation: `docs/rhino8-compat.md`. The Rhino 8 modernization plan is tracked in issue #3.
+- **The planned multi-target is `net48;net8.0-windows`** — *not* net7.0-windows (out of support, and no longer what Rhino 8.20+ runs) and not net10.0 (McNeel recommends net8.0 even for Rhino 9, whose RhinoCommon NuGet ships only net48 + net8.0). Dropping Rhino 7 is deliberately *not* part of this: multi-targeting keeps it for the price of one extra TFM. Rationale and sources: `docs/rhino8-compat.md`.
 - There are no tests and no linting.
 
 ## Architecture
@@ -28,17 +29,45 @@ Everything flows through one WPF window driven by button clicks, with static glo
 1. *Set Floor* → `ElevationInput` window. Floor data lives in `ElevationInput.floorElevations`, a **public static** `Dictionary<double, string>` (elevation Z in model units → floor name), persisted as JSON in the Rhino document user strings under key `"FloorElevations"` (`Methods.SaveDictionaryToDocumentStrings` / `RetrieveDictionaryFromDocumentStrings`).
 2. *Start Checkup* → `Methods.ConcreteModelSetup()`. **Destructive**: it deletes every object in the document and re-adds joined/merged solids, coloring bad geometry red. Objects whose original can't be deleted (locked objects, locked layers — the default `ObjectTable` enumerator includes them) are **skipped and left untouched**, with the freshly added copies rolled back; the skip count is reported in the checkup summary. One failing object logs an error and is skipped rather than aborting the run. Then `UIMethods.GenerateLayerTemplate` builds a per-layer template picker (`Methods.AutomaticTemplateSelect` guesses the element type from the layer name's first `_`-segment; a layer name containing "continuous" forces Continuous Footing).
 3. *Calculate* → for each Rhino object, constructs one template object per its layer's assigned type, passing `ElevationInput.floorElevations` into the constructor.
-4. Exports: Excel (COM interop), IFC, plus *Blockify* (`Methods.Blockify` wraps every object into a one-object block instance).
+4. Exports: Excel (ClosedXML), IFC, plus *Blockify* (`Methods.Blockify` wraps every object into a one-object block instance).
 
 **Template pattern** — the core domain model. Nine element types: Wall, Beam, Column, Footing, ContinuousFooting, Curb, Slab, Styrofoam, Stair. Each `XTemplate.cs` class computes all its quantities in the constructor by classifying Brep faces via their normals (up/down/side against an angle threshold from the UI slider) — e.g. `WallTemplate` derives gross/net volume, top/end/side areas, and length. Each template stores `.floor` (a string) via `Methods.FindFloor`, which nearest-neighbor matches the element's bottom-face elevation against `floorElevations`; `"-"` when no floors are defined. Templates are bucketed into `AllX` containers (all trivial subclasses of `AllTemplates`), whose `allTemplates` is a `Dictionary<string, List<object>>` **keyed by floor name**. Values are `object` and every consumer type-switches with `GetType() == typeof(...)` — extending an element type means touching the template class, `QTOUI.xaml.cs`, `UIMethods.cs`, `ExcelMethods.cs`, and `IFCMethods.cs`.
 
-**IFC export** (`IFCMethods.cs`, xBIM 5.1): builds an in-memory **IFC4-only** model with the spatial hierarchy `IfcProject` → `IfcSite` → `IfcBuilding` → one `IfcBuildingStorey` per floor (from `ElevationInput.floorElevations`, elevations in millimetres) plus an "Unassigned" fallback storey for floor buckets without an elevation entry. The project/site/building chain is required by the IFC spatial-structure rules (IfcSite is technically optional but viewers expect it), so importers like SketchUp always show these three ancestor levels above the storeys. Naming (issue #2): `IfcProject` is the `.3dm` file name without path or extension ("QTO Project" for unsaved documents), site/building are "Site" / "Building". Quantities go into a `"QTO Properties"` pset, Rhino attribute user strings into `"QTO Attributes"`. Geometry is tessellated `IfcFaceBasedSurfaceModel` meshes in absolute world coordinates, converted with one `RhinoMath.UnitScale` factor shared with the storey elevations. Design details (hierarchy rules, duplicate/stale floor names, placement strategy, xBIM API notes): `docs/ifc-export.md`.
+**IFC export** (`IFCMethods.cs`, xBIM 6.1): builds an in-memory **IFC4-only** model with the spatial hierarchy `IfcProject` → `IfcSite` → `IfcBuilding` → one `IfcBuildingStorey` per floor (from `ElevationInput.floorElevations`, elevations in millimetres) plus an "Unassigned" fallback storey for floor buckets without an elevation entry. The project/site/building chain is required by the IFC spatial-structure rules (IfcSite is technically optional but viewers expect it), so importers like SketchUp always show these three ancestor levels above the storeys. Naming (issue #2): `IfcProject` is the `.3dm` file name without path or extension ("QTO Project" for unsaved documents), site/building are "Site" / "Building". Quantities go into a `"QTO Properties"` pset, Rhino attribute user strings into `"QTO Attributes"`. Geometry is tessellated `IfcFaceBasedSurfaceModel` meshes in absolute world coordinates, converted with one `RhinoMath.UnitScale` factor shared with the storey elevations. Design details (hierarchy rules, duplicate/stale floor names, placement strategy, xBIM API notes): `docs/ifc-export.md`.
 
-**Excel export** (`ExcelMethods.cs`): desktop Excel COM automation. Writes the embedded workbook template to `QTO_Template.xlsx` in the user temp folder (`Path.GetTempPath()`), fills a summary sheet and a per-element sheet, saves via dialog.
+**Excel export**: split across two files by design. `ExcelMethods.cs` is the UI side — save dialog, progress window, and scraping the WPF result tables into a plain `ExportModel`. `ExcelWorkbookWriter.cs` fills the embedded template with ClosedXML and saves it; it has **no WPF and no RhinoCommon references**, so the workbook output can be exercised headlessly (keep it that way — it is the only testable seam in the export path). No temp file: the template is opened straight from `Resources.template` in memory.
+
+Two behaviours the COM version got from live Excel and this one must do explicitly: (a) project headers are written **before** the table is resized, because ClosedXML takes table column names from the header cells at resize time; (b) the summary `SUMIF` formulas are written into **every** data row, since ClosedXML has no calculated-column auto-fill. The summary formulas use absolute `PROJECT!$X$2:$X$n` ranges rather than structured references (`PROJECT_TABLE[COUNT]`) — ClosedXML's formula parser rejects intra-table references while converting A1 to R1C1 on save, and those cells sit inside `SUMMARY_TABLE`.
 
 **UI plumbing**: `UIMethods.cs` (~1400 lines) builds all result tables as WPF grids in code. Table row toggle buttons sync selection with the Rhino viewport through the static `RhinoDoc.SelectObjects`/`DeselectObjects` events (subscribed in `StartCheckup_Clicked`, never unsubscribed — reopening the window stacks handlers).
 
 **Dormant code**: save/load of calculated data and the "Exterior" checkup branch are commented out or empty. The old in-plugin MySQL export (`MySqlMethods.cs`, `Send_To_MySql`) was removed in issue #3 Phase 1 — MySQL ingestion lives in `Turner_Seattle_VDC_Server`; if it is ever revived in the plugin, use MySqlConnector rather than MySql.Data.
+
+## Progress-report HTML — Turner design language
+
+Development reports for Turner Construction (like
+`Formwork_Generation/out/Turner_Progress_Report.html`, the reference
+implementation) follow Turner's visual identity, extracted 2026-07 from the
+production stylesheet of turnerconstruction.com. Reuse these tokens instead of
+inventing a look — the drafting-sheet/blueprint aesthetic was explicitly
+rejected as off-brand:
+
+- **Colors**: ink `#17171b`, muted text `#73737b`, hairlines `#dcdcdc`, page
+  ground `#f6f6f6`, white cards; **action blue `#0b5dd0`** (links, eyebrows,
+  card accents), **deep navy `#012471`** (the logo blue — top bars, big
+  numbers), **signature orange-red `#ff4026`** (their arrow/CTA color — use
+  for flow arrows, warnings, pour-break/flag elements, sparingly).
+- **Type**: Turner uses Apercu Pro with *light weights for large headings*.
+  Approximate with `"Segoe UI", "Helvetica Neue", "Open Sans", Helvetica,
+  Arial` (their own fallback stack); headings `font-weight: 300`, large sizes,
+  with a single bold word for emphasis (their "Making a **Difference**"
+  pattern). Body at normal weight; monospace only for file/property names.
+- **Aesthetic**: minimal corporate — generous whitespace, thin hairlines, no
+  heavy borders, figure-forward, arrow motifs. Slide decks: white sheet cards
+  with a 6px navy top bar, a title-block strip with sheet numbers (PR-00…),
+  keyboard navigation, light+dark themes, print-friendly (one sheet per page).
+- **Language**: Turner-facing reports are written in English; claims carry the
+  verified numbers from the run logs, never rounded marketing figures.
 
 ## Conventions and gotchas
 

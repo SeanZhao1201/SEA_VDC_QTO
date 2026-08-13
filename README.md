@@ -9,15 +9,15 @@ This repository (`SEA_VDC_QTO`, from the Seattle VDC quantity-takeoff collaborat
 - **Model checkup** — scans every object in the document, joins and heals surfaces into solids, and highlights bad geometry in red before any quantities are computed.
 - **Nine concrete element types** — Wall, Beam, Column, Footing, Continuous Footing, Curb, Slab, Styrofoam (void form), and Stair, each with its own quantity set (gross/net volume, top/bottom/side/end areas, opening area, length, tread count, ...).
 - **Floor assignment** — floor names and elevations are entered once per project and persisted inside the `.3dm` document; every element is assigned to the nearest floor by its bottom-face elevation.
-- **Excel export** — writes a formatted workbook (summary sheet plus per-element sheet) through desktop Excel.
+- **Excel export** — writes a formatted workbook (summary sheet plus per-element sheet). Desktop Excel is **not** required.
 - **IFC export** — writes an IFC4 file with a full spatial hierarchy (`IfcProject` → `IfcSite` → `IfcBuilding` → `IfcBuildingStorey`), one storey per defined floor with its real elevation, all quantities in a `QTO Properties` property set, and any Rhino attribute user texts in a `QTO Attributes` property set.
 - **Blockify** — optionally wraps every object into a single-object block instance named after its layer path.
 
 ## Requirements
 
-- Windows. The plugin UI is WPF and the Excel export uses COM automation, so it cannot run on Rhino for Mac.
+- Windows. The plugin UI is WPF, so it cannot run on Rhino for Mac.
 - Rhino 7 (the plugin is compiled against RhinoCommon 7.x). It also loads in Rhino 8 for Windows; if the IFC export misbehaves under Rhino 8's default .NET Core runtime, run the `SetDotNetRuntime` command, choose `NETFramework`, and restart Rhino.
-- Desktop Microsoft Excel, for the Excel export only.
+- Nothing else. Microsoft Excel is **not** required — the workbook is written directly by the plugin.
 
 ## Installation
 
@@ -45,7 +45,7 @@ Every `RunQTO` session writes a log file (`QTO_<date>_<time>.log`) to a `Logs` s
 
 ## IFC export details
 
-- Schema: IFC4, written with [xBIM Essentials](https://github.com/xBimTeam/XbimEssentials) 5.1.
+- Schema: IFC4, written with [xBIM Essentials](https://github.com/xBimTeam/XbimEssentials) 6.1.
 - Spatial structure: `IfcProject` (named after the `.3dm` file) → `IfcSite` ("Site") → `IfcBuilding` ("Building") → one `IfcBuildingStorey` per floor defined in the elevation input, ordered by elevation. Elements that have no floor assignment are contained in a fallback storey named `Unassigned`.
 - Storey `Elevation` values are converted from the Rhino model unit to millimeters, matching the exported geometry (the IFC length unit is the millimeter).
 - Geometry: tessellated `IfcFaceBasedSurfaceModel` render meshes with layer color, in absolute world coordinates.
@@ -73,4 +73,4 @@ For a manual build instead: build the `QTO_Tool` project in `Release` configurat
 
 ## License
 
-[MIT](LICENSE). Third-party libraries redistributed in the release zip (xBIM and its dependencies) remain under their own licenses.
+[MIT](LICENSE). Third-party libraries redistributed in the release zip (xBIM, ClosedXML, and their dependencies) remain under their own licenses.

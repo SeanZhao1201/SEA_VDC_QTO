@@ -16,6 +16,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # v1.2.0 shipped stamped 1.0.3.0 because AssemblyInfo.cs was not bumped
+      # before tagging. Rhino's plugin manager and every bug report read the
+      # assembly, not the tag, so a mismatch breaks version-to-commit tracing.
+      - name: Check tag matches AssemblyFileVersion
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}' -replace '^v', ''
+          $info = Get-Content QTO_Tool\Properties\AssemblyInfo.cs -Raw
+          if ($info -notmatch '(?m)^\[assembly: AssemblyFileVersion\("([^"]+)"\)\]') {
+            throw "Could not read AssemblyFileVersion from AssemblyInfo.cs"
+          }
+          $assembly = $Matches[1]
+          # Tag is 3-part (v1.2.0), the attribute is 4-part (1.2.0.0): compare the first three.
+          $tagParts = ($tag -split '\.')
+          $asmParts = ($assembly -split '\.')
+          $tagKey = ($tagParts[0..([Math]::Min(2, $tagParts.Count - 1))] -join '.')
+          $asmKey = ($asmParts[0..([Math]::Min(2, $asmParts.Count - 1))] -join '.')
+          if ($tagKey -ne $asmKey) {
+            throw "Tag $tag does not match AssemblyFileVersion $assembly. Bump QTO_Tool\Properties\AssemblyInfo.cs before tagging."
+          }
+          Write-Host "OK: tag $tag matches AssemblyFileVersion $assembly"
+
       - name: Build plugin
         run: dotnet build QTO_Tool\QTO_Tool.csproj -c Release
 

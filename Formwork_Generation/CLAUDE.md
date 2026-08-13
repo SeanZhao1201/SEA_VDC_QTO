@@ -189,11 +189,12 @@ the child Rhino never exits; a child launched with `CreateNoWindow=true` that hi
 dialog — including a licence check for the second seat — hangs invisibly, so a watchdog
 timeout is required, not just a Cancel button.
 
-## Next feature: side forms (边模) — requested, not yet designed
+## Next feature: side forms (边模) — scope decided 2026-08-12, geometry not yet designed
 
 Today the generator emits only the **horizontal** temporary works: a soffit platform
-per slab underside plus shoring props. The user has asked for **side forms** next.
-Nothing below is decided — it is the context a design session should start from.
+per slab underside plus shoring props. Side forms are next. The scope and reporting
+decisions below were made 2026-08-12; the detailed geometry design (tolerances,
+sampling, panel params, new invariants) still needs its own session.
 
 What already exists and is directly reusable:
 
@@ -204,23 +205,144 @@ What already exists and is directly reusable:
 - Slab thickness is already derivable per floor — `scan_slabs()` records both
   `soffit_z` and `slab_top_z`, and the Rhino generator works per soffit face.
 - **Pour-break splitting already computes where construction joints fall** and writes
-  derived slabs whose new edges are precisely where bulkheads (施工缝端模) belong. The
-  pour-break output is the natural input for that subset of side forms — see the
-  pour-break section in the project memory and `out/pourbreak_report.json`.
+  derived slabs whose new edges are precisely where bulkheads (施工缝端模) belong.
 
-Open questions for the design session:
+**Decided (2026-08-12):**
 
-- Scope: slab edges only, or also beam sides (梁侧模), wall faces and column faces?
-  The original plan listed beam-side forms as phase P3.
-- Suppression: an edge that sits on top of a wall or beam below does not need a form.
-  What geometric test decides that — a downward ray, or an overlap against the
-  floor-below outline (the same tightening already noted under Known limits)?
-- Are pour-break bulkheads a distinct element type in the IFC (`ObjectType`), or the
-  same `side` type distinguished by a property?
-- Formwork **area** is itself a takeoff quantity (模板面积). Side forms are where that
-  becomes worth reporting — decide whether quantities are emitted here or left to QTO.
-- New invariants will be needed; the existing six are soffit-only and say nothing about
-  vertical elements.
+- **Scope v1: slab edge forms + pour-break bulkheads + opening edges** (shaft and
+  stair-opening perimeters — the opening inner loops are already in the traced
+  outline, so they are geometrically free). Beam sides (梁侧模) stay in P3; wall and
+  column faces are out of scope — they belong to a different formwork system (gang
+  or crane-cycled forms) and QTO already reports their gross side areas.
+- **Input model: prefer the pour-break derived model when one exists.** Split-derived
+  edges classify as bulkheads (detectable via the `POUR`/`SOURCE_SLAB` user strings
+  the splitter writes), original outline edges as side forms — one generation path,
+  two classifications. On an unsplit model it degrades to pure side forms.
+- **Suppression** (an edge bearing on a wall/beam below needs no form): sample along
+  the edge and **ray-cast down** — the same RayShoot machinery the props use; a hit
+  whose top face is at the soffit elevation (within tolerance) suppresses that
+  segment. The plan-overlap test against the floor-below outline is kept as the
+  *independent verification* path, mirroring the P1 generate-vs-verify split.
+- **IFC typing: `ObjectType` gains `side` and `bulkhead`** alongside
+  `platform | support`. 4D search sets bind on ObjectType and the two are struck at
+  different times (bulkheads come off before the adjacent pour), so a property-only
+  distinction would push a filtering step onto the Synchro side.
+- **Quantities: net formwork area (模板面积) is reported on the formwork side, not
+  QTO's.** Each side/bulkhead element carries `AREA` in its `QTO Properties` pset
+  (same pattern as the props' `HEIGHT_M`), with per-floor totals in the export JSON;
+  reports are generated from that JSON by a standalone CPython script, in the same
+  mold as `formwork_ifc_from_json.py`. Nothing is written back into the QTO Excel —
+  the one-way dependency stands. QTO keeps its gross geometric areas
+  (`SlabTemplate.edgeArea`/`perimeter` etc.); *net ≤ gross* is the cross-check
+  between the two.
+- **GUI cross-point** (the only one; GUI stays a separate discussion, see the repo
+  memory): `FormworkUI` needs an input-model selector (original vs pour-break
+  derived 3dm). Everything else rides in the config JSON the driver script reads.
+
+**Draft invariants** to finalize in the design session (the existing six are
+soffit-only):
+
+1. Side-form path = the true plan outline, concavities and opening inner loops
+   included.
+2. Side-form height = slab thickness (`slab_top_z − soffit_z`, per soffit face).
+3. A suppressed edge segment must have a supporting solid top face directly below
+   within tolerance (necessary and sufficient; independently verifiable).
+4. Bulkheads lie on pour-break joint lines, length = the joint segment.
+5. Net formwork area ≤ outline perimeter × thickness; the deficit equals suppressed
+   length × thickness (reconciles against QTO's `edgeArea`).
+
+**Still open for the design session:** sampling spacing and suppression tolerance;
+side-form panel thickness/offset detail (placeholder fidelity, as ever); whether
+elements group per pour piece (one assembly per POUR block) so 4D strike semantics
+fall out of the containment tree; kicker/edge details — likely rejected as
+over-fidelity.
+
+## Pour-break authoring (截断设计) — decided 2026-08-13, not yet built
+
+The shipped pour-break pass was reverse-engineered from one PDF: markups →
+`pour_breaks_model.json` → `rhino/split_pourbreaks.py`. The two front-end scripts
+(`extract_pourbreaks.py`, `make_breaks_model.py`) were scratchpad-only and are not
+in the repo, the JSON can only express axis-aligned orthogonal cuts
+(`dir: NS|EW` + one coordinate + span), and pour numbering is binary
+(POUR1/POUR2 via the PDF's centroid). Productizing means giving the modeler
+authorship. Decisions:
+
+**Invert the pipeline — curves are the single source of truth.**
+`[optional PDF importer] → curves on a convention layer ← modeler draws/edits
+freely → read-only harvest → JSON v2 → splitter`. The splitter's battle-tested
+mechanics (tolerance ladder, `CreateBooleanSplit` fallback, sliver guard,
+volume-conservation check, staged-copy `WriteFile` flow) are untouched by where
+breaks come from; only the cut geometry generalizes. The PDF path is **demoted to
+a bootstrapper**: it emits curves onto the layer for humans to review and adjust,
+never JSON directly; its scripts get cleaned up and committed when that lands.
+
+**Authoring surface v1: `_POURBREAK` layer + harvest.** Modeler draws plan
+curves on `_POURBREAK` (optional `::L<nn>` sublayers to pin the floor). A pure
+Python, **read-only** harvest walks the layer and writes JSON v2 — reading fires
+no document events, so REVERT CHECKUP is unaffected. Two known hazards, both
+accepted with mitigations rather than QTO changes:
+
+- **The QTO checkup deletes curves** (by design — it deletes every object and
+  re-adds only solids). Harvest *is* the persistence: a `restore` command redraws
+  the curves from JSON after a wipe. Discipline: breaks are drawn after the QTO
+  pass; a broken rule costs only the un-harvested delta.
+- **Layer-table pollution**: `_POURBREAK` grows a `GenerateLayerTemplate` row and
+  shows in checkup counts. Accepted for now — **QTO stays untouched** (decided
+  2026-08-13); an "ignore `_`-prefixed layers, with a logged count" patch is a
+  v1.1 candidate, not part of this work.
+
+Target state once `FormworkUI` exists: breaks as pure data (doc user text /
+JSON) picked with `GetPoint` and rendered via a **display conduit** — never in
+the `ObjectTable`, so both hazards vanish; the layer path then remains as a
+power-user back door feeding the same JSON.
+
+**Cut semantics v2:** a break is a **plan polyline — any orientation, jogs
+allowed** (routing around openings is normal practice); arbitrary planar curves
+are accepted but non-line segments are flagged in the report, not rejected.
+Cutter = vertical extrusion through full slab depth; the progressive
+end-extension ladder (15/60/150 ft) is kept so under-drawn lines still sever.
+Floor binding: the curve's own Z, nearest-matched against `FloorElevations`
+(sublayer name overrides); the harvest report states every binding for review.
+Every slab on that floor the cutter actually crosses is split ("not crossed"
+status stays).
+
+**Pour numbering: text dots + automatic fallback.** The modeler drops a text dot
+("1", "2", "3"…) inside each pour region on the layer — the generalization of
+the old `pour1_centroid_ft`. Floors without dots get automatic ordering along
+the dominant cut direction. Pour order is scheduling intent: authorable, never
+forced.
+
+**Schema v2 sketch** (`pour_breaks_model.json`): `version: 2`; per floor
+`breaks: [{id, polyline_ft: [[x,y]…], z_ft, provenance, note}]` replacing
+`{dir, pos_ft, span_ft}` (a v1 cut converts to a two-point polyline);
+`pour_markers: [{pour, at_ft}]` replacing `pour1_centroid_ft`; `pdf_sf` renamed
+`target_sf` (optional pour-size target); `grid` optional; `source` records the
+producer (`layer-harvest | pdf | ui`).
+
+**The review report is freedom's counterpart** — break placement is an EOR
+decision, so every run emits the engineer-facing artifact (extended
+`pourbreak_report.json`, Turner-style HTML later): per-pour soffit sf and CY
+against `target_sf`; minimum distance from each break segment to vertical
+supports below (construction joints belong near mid-span — flagged, never
+blocked); offset to the nearest grid line (grid now optional); sliver/volume
+reversions surfaced with reasons. Iteration is cheap — draw, run headless on a
+staged copy, take the report to the engineer.
+
+**Portability (audited 2026-08-13 — "would this survive a non-Sunbreak
+project?"):** the P1 generator already would (metre params ×
+`RhinoMath.UnitScale`, configurable `slab_layer_keyword`/`slab_layer_exclude`,
+floors from `FloorElevations` verbatim). The residue is in
+`split_pourbreaks.py` and must go during the v2 rework: (a) drop the
+Feet-only abort and the ft extension constants — adopt the generator's
+metre-params + UnitScale pattern, honoring the JSON `units` field; (b) the
+hardcoded "slab"/"sog"/"topping" layer filter becomes the same params the
+generator has; (c) the Bellwether paths (already listed). Also
+`formwork_ifc_from_json.py::_floor_sort_key` assumes `L<nn>`-style names —
+sort storeys by **elevation** instead (always available; names then carry no
+semantics). Note the v1 JSON could not even express a diagonal cut, so the old
+pipeline was unusable on non-orthogonal buildings — the polyline schema fixes
+that, it is not a nicety. Everything else that varies per project (grade_z,
+prop spacing, `target_sf`, grid, the PDF) is an input, not a coupling.
 
 ## Known limits
 

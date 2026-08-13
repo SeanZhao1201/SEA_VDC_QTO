@@ -40,6 +40,32 @@ Everything flows through one WPF window driven by button clicks, with static glo
 
 **Dormant code**: save/load of calculated data and the "Exterior" checkup branch are commented out or empty. The old in-plugin MySQL export (`MySqlMethods.cs`, `Send_To_MySql`) was removed in issue #3 Phase 1 — MySQL ingestion lives in `Turner_Seattle_VDC_Server`; if it is ever revived in the plugin, use MySqlConnector rather than MySql.Data.
 
+## Progress-report HTML — Turner design language
+
+Development reports for Turner Construction (like
+`Formwork_Generation/out/Turner_Progress_Report.html`, the reference
+implementation) follow Turner's visual identity, extracted 2026-07 from the
+production stylesheet of turnerconstruction.com. Reuse these tokens instead of
+inventing a look — the drafting-sheet/blueprint aesthetic was explicitly
+rejected as off-brand:
+
+- **Colors**: ink `#17171b`, muted text `#73737b`, hairlines `#dcdcdc`, page
+  ground `#f6f6f6`, white cards; **action blue `#0b5dd0`** (links, eyebrows,
+  card accents), **deep navy `#012471`** (the logo blue — top bars, big
+  numbers), **signature orange-red `#ff4026`** (their arrow/CTA color — use
+  for flow arrows, warnings, pour-break/flag elements, sparingly).
+- **Type**: Turner uses Apercu Pro with *light weights for large headings*.
+  Approximate with `"Segoe UI", "Helvetica Neue", "Open Sans", Helvetica,
+  Arial` (their own fallback stack); headings `font-weight: 300`, large sizes,
+  with a single bold word for emphasis (their "Making a **Difference**"
+  pattern). Body at normal weight; monospace only for file/property names.
+- **Aesthetic**: minimal corporate — generous whitespace, thin hairlines, no
+  heavy borders, figure-forward, arrow motifs. Slide decks: white sheet cards
+  with a 6px navy top bar, a title-block strip with sheet numbers (PR-00…),
+  keyboard navigation, light+dark themes, print-friendly (one sheet per page).
+- **Language**: Turner-facing reports are written in English; claims carry the
+  verified numbers from the run logs, never rounded marketing figures.
+
 ## Conventions and gotchas
 
 - Layer names are `_`-separated; `nameAbb` shown everywhere is the first two segments. Quantities are rounded to 2 decimals at computation time, inside template constructors.

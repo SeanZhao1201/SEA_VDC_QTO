@@ -1,0 +1,13 @@
+# Sample / source IFCs and .3dm models — kept locally for development, never pushed
+*.ifc
+sample/
+
+# Generated artifacts and Python caches
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# out/ holds generated 3dm/ifc/json (tens of MB) — ignore its contents rather than
+# the directory itself, so the one committed reference document below survives.
+out/*
+!out/Turner_Progress_Report.html

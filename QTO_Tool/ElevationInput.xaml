@@ -150,14 +150,20 @@
 
                 <Grid.RowDefinitions>
                     <RowDefinition Height="60"/>
+                    <RowDefinition Height="60"/>
                 </Grid.RowDefinitions>
 
-                <Button Name="AddLevel" Content="Add Level" Margin="0 0 10 0"
-                        Grid.Column="0" Grid.Row="0"
+                <Button Name="ScanModel" Content="Scan Model" Margin="0 0 0 10"
+                        Grid.Column="0" Grid.Row="0" Grid.ColumnSpan="2"
+                        FontSize="26" Background="#52a0d1"
+                        Click="ScanModel_Clicked"/>
+
+                <Button Name="AddLevel" Content="Add Level" Margin="0 10 10 0"
+                        Grid.Column="0" Grid.Row="1"
                         FontSize="26" Click="AddLevel_Clicked"/>
 
-                <Button Name="Accept" Content="Accept" Margin="10 0 0 0"
-                        Grid.Column="1" Grid.Row="0"
+                <Button Name="Accept" Content="Accept" Margin="10 10 0 0"
+                        Grid.Column="1" Grid.Row="1"
                         FontSize="26" Click="Accept_Clicked"/>
 
             </Grid>

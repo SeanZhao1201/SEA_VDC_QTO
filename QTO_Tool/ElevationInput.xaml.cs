@@ -44,6 +44,114 @@ namespace QTO_Tool
             UIMethods.AddElevationInput(this.ElevationInputWrapper);
         }
 
+        // The single most expensive failure in the field logs was this
+        // dialog left empty: the whole take-off silently lands in the "-"
+        // bucket. Scan proposes a floor table from the model itself -
+        // solids' bottom elevations clustered per storey (each cluster's
+        // TOP is where walls and columns sit, i.e. top of slab = the floor
+        // elevation) - so the user edits a proposal instead of typing into
+        // a blank form. Nothing is saved until Accept.
+        private void ScanModel_Clicked(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
+                {
+                    RunQTO.doc = Rhino.RhinoDoc.ActiveDoc;
+                }
+                Rhino.RhinoDoc doc = RunQTO.doc;
+
+                List<double> bottoms = new List<double>();
+                foreach (Rhino.DocObjects.RhinoObject obj in doc.Objects)
+                {
+                    if (obj == null || obj.Attributes == null) { continue; }
+                    Rhino.DocObjects.Layer layer = doc.Layers[obj.Attributes.LayerIndex];
+                    string path = layer == null ? "" : (layer.FullPath ?? "");
+                    if (path.StartsWith(FormworkMethods.FormworkLayer, StringComparison.OrdinalIgnoreCase) ||
+                        path.StartsWith(FormworkMethods.PourBreakLayer, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    // meshes and block instances (Blockify wraps every
+                    // object) are take-off geometry too - a Blockified
+                    // model must not scan to zero
+                    Rhino.Geometry.GeometryBase geom = obj.Geometry;
+                    if (!(geom is Rhino.Geometry.Brep) &&
+                        !(geom is Rhino.Geometry.Extrusion) &&
+                        !(geom is Rhino.Geometry.Mesh) &&
+                        !(geom is Rhino.Geometry.InstanceReferenceGeometry))
+                    {
+                        continue;
+                    }
+                    Rhino.Geometry.BoundingBox bb = obj.Geometry.GetBoundingBox(false);
+                    if (bb.IsValid)
+                    {
+                        bottoms.Add(bb.Min.Z);
+                    }
+                }
+                if (bottoms.Count == 0)
+                {
+                    MessageBox.Show("No solid geometry found to scan.");
+                    return;
+                }
+                bottoms.Sort();
+
+                // GAP-based clustering: a new floor starts where the gap to
+                // the previous bottom elevation exceeds 1 m. An anchored
+                // band would split the foundation storey (footing
+                // undersides sit metres below the slab) into phantom
+                // floors; storeys are separated by far more than 1 m of
+                // empty elevation, so gap merging is safe. The cluster MAX
+                // (top of slab, where walls sit) is the floor elevation.
+                double tol = Rhino.RhinoMath.UnitScale(
+                    Rhino.UnitSystem.Meters, doc.ModelUnitSystem) * 1.0;
+                List<double> proposed = new List<double>();
+                double prev = bottoms[0];
+                foreach (double z in bottoms)
+                {
+                    if (z - prev > tol)
+                    {
+                        proposed.Add(prev);   // close the cluster at its max
+                    }
+                    prev = z;
+                }
+                proposed.Add(prev);
+
+                // blank every existing row, then fill the proposal
+                int row = 0;
+                while (true)
+                {
+                    TextBox name = FindTextBoxByGridRowAndColumn(ElevationInputWrapper, row, 1);
+                    TextBox elev = FindTextBoxByGridRowAndColumn(ElevationInputWrapper, row, 2);
+                    if (name == null && elev == null) { break; }
+                    if (name != null) { name.Text = string.Empty; }
+                    if (elev != null) { elev.Text = string.Empty; }
+                    row++;
+                }
+                Dictionary<double, string> proposal = new Dictionary<double, string>();
+                int floorNo = 0;
+                foreach (double z in proposed)
+                {
+                    double key = Math.Round(z, 3);
+                    if (proposal.ContainsKey(key))
+                    {
+                        continue;   // two clusters rounding onto one value
+                    }
+                    floorNo++;
+                    proposal[key] = "L" + floorNo.ToString("00");
+                }
+                PopulateTextBoxesFromDictionary(proposal);
+
+                MessageBox.Show(proposed.Count + " floor(s) proposed from " +
+                    bottoms.Count + " solids. Edit the names and elevations, " +
+                    "then Accept - nothing is saved until you do.");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Scan failed: " + ex.Message);
+            }
+        }
+
         private void Accept_Clicked(object sender, RoutedEventArgs e)
         {
             ElevationInput.floorElevations.Clear();

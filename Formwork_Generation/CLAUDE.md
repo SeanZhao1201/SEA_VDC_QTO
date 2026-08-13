@@ -174,7 +174,8 @@ that has been verified on 1,889 real elements and carries a 299-line headless
 acceptance test for a C# rewrite with no tests at all. The dependency is one-way —
 formwork consumes a completed QTO pass; QTO never waits on formwork.
 
-**How the plugin will reach it (decided 2026-08-12, not yet built):** a separate
+**How the plugin reaches it (decided 2026-08-12, BUILT 2026-08-13 — see the
+repo-level CLAUDE.md for the as-built description):** a separate
 Rhino command `RunFormwork` opening its own `FormworkUI` window — *not* a new tab
 in `QTOUI`. `QTOUI.xaml` gains a single button. Every Python run happens in a
 **second, headless Rhino process opened on a `RhinoDoc.WriteFile` copy** of the

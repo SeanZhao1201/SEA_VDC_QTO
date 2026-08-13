@@ -28,8 +28,8 @@ Everything flows through one WPF window driven by button clicks, with static glo
 **Logging** (`Logger.cs`): one log file per `RunQTO` session, written to a `Logs` subfolder next to the plugin assembly (falls back to `%AppData%\QTO_Tool\Logs` when that folder isn't writable); the path is printed on the Rhino command line. The checkup logs a per-object verdict (solid / joined / bad + reason / skipped-locked / error), so user bug reports should come with this file. Logging must never throw — all Logger entry points swallow their own exceptions.
 
 **User workflow / pipeline** (handlers in `QTOUI.xaml.cs`, ~1200 lines):
-1. *Set Floor* → `ElevationInput` window. Floor data lives in `ElevationInput.floorElevations`, a **public static** `Dictionary<double, string>` (elevation Z in model units → floor name), persisted as JSON in the Rhino document user strings under key `"FloorElevations"` (`Methods.SaveDictionaryToDocumentStrings` / `RetrieveDictionaryFromDocumentStrings`).
-2. *Start Checkup* → `Methods.ConcreteModelSetup()`. **Destructive**: it deletes every object in the document and re-adds joined/merged solids, coloring bad geometry red. Objects whose original can't be deleted (locked objects, locked layers — the default `ObjectTable` enumerator includes them) are **skipped and left untouched**, with the freshly added copies rolled back; the skip count is reported in the checkup summary. One failing object logs an error and is skipped rather than aborting the run. Then `UIMethods.GenerateLayerTemplate` builds a per-layer template picker (`Methods.AutomaticTemplateSelect` guesses the element type from the layer name's first `_`-segment; a layer name containing "continuous" forces Continuous Footing).
+1. *Set Floor* → `ElevationInput` window. Floor data lives in `ElevationInput.floorElevations`, a **public static** `Dictionary<double, string>` (elevation Z in model units → floor name), persisted as JSON in the Rhino document user strings under key `"FloorElevations"` (`Methods.SaveDictionaryToDocumentStrings` / `RetrieveDictionaryFromDocumentStrings`). A **Scan Model** button (2026-08-13) proposes the floor table from the model itself — solids' bottom elevations, gap-clustered at 1 m, cluster max = top of slab = floor elevation; the field logs' most expensive failure was this dialog left empty, with the whole take-off landing in the `"-"` bucket.
+2. *Start Checkup* → `Methods.ConcreteModelSetup()`. **Destructive**: it deletes every object in the document and re-adds joined/merged solids, coloring bad geometry red. A **Preview Checkup** button (2026-08-13) runs the REAL checkup on a staged `WriteFile` copy in a second headless Rhino (`QTOCheckupReport`, a worker command that refuses to run without its env var — typed interactively it would shred the live doc) and reports the deletion list — curves (`_POURBREAK` flagged: harvest first), text dots, non-solids; block instances/meshes counted as take-off geometry, not deletions — without touching the open document; the preview can never drift from the checkup because it IS the checkup, one process boundary away. Objects whose original can't be deleted (locked objects, locked layers — the default `ObjectTable` enumerator includes them) are **skipped and left untouched**, with the freshly added copies rolled back; the skip count is reported in the checkup summary. One failing object logs an error and is skipped rather than aborting the run. Then `UIMethods.GenerateLayerTemplate` builds a per-layer template picker (`Methods.AutomaticTemplateSelect` guesses the element type from the layer name's first `_`-segment; a layer name containing "continuous" forces Continuous Footing).
 3. *Calculate* → for each Rhino object, constructs one template object per its layer's assigned type, passing `ElevationInput.floorElevations` into the constructor.
 4. Exports: Excel (ClosedXML), IFC, plus *Blockify* (`Methods.Blockify` wraps every object into a one-object block instance).
 
@@ -58,12 +58,21 @@ the plugin.** The dependency is one-way — formwork consumes verified solids an
 assignments produced by a completed QTO pass; QTO never waits on formwork. Target
 release v1.2, after v1.1 (preview checkup + wizard UX).
 
-**GUI decision (2026-08-12): a separate command and window, not a new tab in `QTOUI`.**
-`RunFormwork` opens its own `FormworkUI`; `QTOUI.xaml` gains only a single button
-(~6 lines, deletable in one hunk). All Python runs in a **second, headless Rhino
-process opened on a `RhinoDoc.WriteFile` copy** of the model, never in the Rhino
-process that owns the user's document. Three facts make the process boundary
-load-bearing rather than stylistic:
+**GUI (decided 2026-08-12, BUILT 2026-08-13): a separate command and window, not a
+new tab in `QTOUI`.** The `RunFormwork` command opens `FormworkUI`
+(`RunFormwork.cs`, `FormworkUI.xaml(.cs)`, `FormworkMethods.cs`); `QTOUI.xaml`
+gained exactly one launcher button. Harvest/restore of pour breaks run in-process
+on the live document (harvest is read-only; restore confirms because adding
+objects kills REVERT). Split and Generate always run in a **second, headless
+Rhino process on a `RhinoDoc.WriteFile` copy** of the model, launched with a
+watchdog timeout (a hidden dialog — e.g. the second-seat licence check — would
+otherwise hang invisibly), never in the Rhino process that owns the user's
+document. The Python engines are embedded in the `.rhp` as LINKED resources from
+`Formwork_Generation/rhino/` (one source of truth) and extracted at runtime into
+the `%LOCALAPPDATA%\qto_fw_test` staging folder — the same contract the headless
+dev loop uses (fixed filenames: one run at a time, enforced in-plugin by a
+static gate; do not run the GUI and the dev loop concurrently). Three facts
+make the process boundary load-bearing rather than stylistic:
 
 - `rhino/formwork_gen_rhino.py` defaults to `"mode": "generate"` (the destructive
   branch, `doc.Objects.AddBrep`). Process isolation makes that fail-open default
@@ -75,14 +84,17 @@ load-bearing rather than stylistic:
   second Rhino instead.
 - `UIMethods.GenerateLayerTemplate` enumerates `doc.Layers` regardless of lock state, so
   a `_FORMWORK` layer in the document would grow template-picker rows and pollute the
-  checkup counts. If formwork geometry is ever detected in the document, Start Checkup
-  must be **hard-disabled**, not merely warned about.
+  checkup counts. Start Checkup is therefore **hard-disabled** (button off + hard
+  return, `StartCheckup_Clicked`) whenever `_FORMWORK` objects are detected.
 
-Also planned: a freshness stamp written after Calculate (document id + geometry
-fingerprint + floor dictionary) that gates the formwork window. It must validate the
-**floor count separately** — a model where floors were never set fingerprints as a
-perfect match while the whole take-off is bucketed under `"-"`, so a green light there
-would be actively misleading.
+The **freshness stamp** is implemented (`FormworkMethods.WriteStamp/CheckStamp`):
+written at exactly one site — the Calculate success path — it fingerprints the
+QTO solids (Breps/Extrusions, `_FORMWORK`/`_POURBREAK` layers excluded so
+authoring breaks after Calculate stays green) plus the floor dictionary, and
+gates FormworkUI's Split/Generate buttons red/amber/green. The **floor count is
+validated separately** — a model where floors were never set fingerprints as a
+perfect match while the whole take-off is bucketed under `"-"`, so a green light
+there would be actively misleading.
 
 `_FORMWORK`-layer objects must never be present during a checkup: the checkup deletes
 and re-adds every object in the document.

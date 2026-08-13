@@ -114,12 +114,183 @@ namespace QTO_Tool
             }
         }
 
+        // The formwork window is its own command and window by design -
+        // QTOUI only carries this launcher.
+        private void Formwork_Clicked(object sender, RoutedEventArgs e)
+        {
+            RhinoApp.RunScript("_RunFormwork", false);
+        }
+
+        private bool previewRunning = false;
+
+        // PREVIEW CHECKUP: run the REAL checkup on a staged WriteFile copy
+        // in a second headless Rhino and report what it did - deletion
+        // list first (curves and _POURBREAK curves are the user's freshest
+        // work and the checkup never re-adds them). The open document is
+        // not touched, so the preview can never drift from reality: it IS
+        // the checkup, one process boundary away.
+        private void PreviewCheckup_Clicked(object sender, RoutedEventArgs e)
+        {
+            if (this.previewRunning)
+            {
+                return;
+            }
+            if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
+            {
+                RunQTO.doc = RhinoDoc.ActiveDoc;
+            }
+            // Mirror the real checkup's hard stop: previewing with formwork
+            // present would shred the copy's formwork and report meaningless
+            // numbers.
+            if (FormworkMethods.FormworkGeometryPresent(RunQTO.doc))
+            {
+                MessageBox.Show("Formwork geometry (" + FormworkMethods.FormworkLayer +
+                    " layer) is present in this document - the checkup (and its " +
+                    "preview) is disabled until it is removed.");
+                return;
+            }
+            string staged;
+            string reportPath;
+            try
+            {
+                // own file name: never clobber the model.3dm a running
+                // formwork child may be reading
+                staged = FormworkMethods.StageModelCopy(RunQTO.doc, "checkup_model.3dm");
+                reportPath = System.IO.Path.Combine(
+                    FormworkMethods.StagingDir, "checkup_preview.json");
+                if (System.IO.File.Exists(reportPath))
+                {
+                    System.IO.File.Delete(reportPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Preview staging failed: " + ex.Message);
+                return;
+            }
+            this.previewRunning = true;
+            this.PreviewCheckupButton.IsEnabled = false;
+            this.PreviewCheckupButton.Content = "PREVIEWING...";
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    string summary;
+                    bool ok = FormworkMethods.RunChildRhinoCommand(
+                        staged, "QTOCheckupReport",
+                        new Dictionary<string, string>
+                        {
+                            { "QTO_CHECKUP_REPORT", reportPath },
+                        },
+                        10 * 60 * 1000, out summary);
+                    Dispatcher.Invoke(new Action(() =>
+                        ShowPreviewResult(ok, summary, reportPath)));
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error("Checkup preview failed.", ex);
+                    try
+                    {
+                        Dispatcher.Invoke(new Action(() =>
+                            MessageBox.Show("Preview failed: " + ex.Message)));
+                    }
+                    catch { }
+                }
+                finally
+                {
+                    try
+                    {
+                        Dispatcher.Invoke(new Action(() =>
+                        {
+                            this.previewRunning = false;
+                            this.PreviewCheckupButton.IsEnabled = true;
+                            this.PreviewCheckupButton.Content = "PREVIEW CHECKUP";
+                        }));
+                    }
+                    catch { }
+                }
+            });
+        }
+
+        private void ShowPreviewResult(bool ok, string summary, string reportPath)
+        {
+            if (!ok || !System.IO.File.Exists(reportPath))
+            {
+                MessageBox.Show("Preview did not complete: " + summary);
+                return;
+            }
+            try
+            {
+                Newtonsoft.Json.Linq.JObject report = Newtonsoft.Json.Linq.JObject.Parse(
+                    System.IO.File.ReadAllText(reportPath));
+                string error = (string)report["error"];
+                if (!string.IsNullOrEmpty(error))
+                {
+                    MessageBox.Show("Preview checkup failed inside the child Rhino:\n" + error);
+                    return;
+                }
+                Func<string, string, int> num = (section, key) =>
+                    (int?)report.SelectToken(section + "." + key) ?? 0;
+                int curvesLost = num("before", "curves") - num("after", "curves");
+                int pbCurvesLost = num("before", "pourbreakCurves") - num("after", "pourbreakCurves");
+                int dotsLost = num("before", "dots") - num("after", "dots");
+                int otherLost = num("before", "other") - num("after", "other");
+                int rebuilt = num("before", "instances") + num("before", "meshes");
+
+                string text = "PREVIEW - the open document was NOT touched.\n\n" +
+                    (string)report["summary"] + "\n\n" +
+                    "Running the real checkup would DELETE (never re-added):\n" +
+                    "  " + curvesLost + " curve(s)" +
+                    (pbCurvesLost > 0
+                        ? " - " + pbCurvesLost + " of them on " +
+                          FormworkMethods.PourBreakLayer + ". HARVEST YOUR POUR BREAKS FIRST."
+                        : "") + "\n" +
+                    "  " + dotsLost + " text dot(s), " + otherLost + " other non-solid object(s)\n" +
+                    (rebuilt > 0
+                        ? "(" + rebuilt + " block instance(s)/mesh(es) are take-off " +
+                          "geometry and get rebuilt into solids, not deleted)\n"
+                        : "") +
+                    "Objects: " + num("before", "total") + " -> " + num("after", "total") +
+                    " (" + num("after", "solids") + " solids re-added)";
+
+                this.CheckupResults.Content = text;
+                this.CheckupResults.Visibility = Visibility.Visible;
+                if (curvesLost > 0 || dotsLost > 0)
+                {
+                    MessageBox.Show(text, "Checkup preview");
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Preview report unreadable: " + ex.Message);
+            }
+        }
+
         private void StartCheckup_Clicked(object sender, RoutedEventArgs e)
         {
             // Clicks queued while a checkup blocked the UI thread must not start
             // a second run on a half-processed document.
             if (this.checkupRunning)
             {
+                return;
+            }
+
+            // The checkup deletes and re-adds EVERY object in the document.
+            // With formwork geometry present that would destroy or double the
+            // generated temporary works and pollute the template picker, so
+            // this is a hard stop, not a warning. Refresh the doc reference
+            // FIRST - the guard must inspect the same document the checkup
+            // below will run on, not a stale one.
+            if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
+            {
+                RunQTO.doc = RhinoDoc.ActiveDoc;
+            }
+            if (FormworkMethods.FormworkGeometryPresent(RunQTO.doc))
+            {
+                this.StartCheckup.IsEnabled = false;
+                MessageBox.Show("Formwork geometry (" + FormworkMethods.FormworkLayer +
+                    " layer) is present in this document. Start Checkup is disabled " +
+                    "until it is removed - purge the formwork or work on a copy.");
                 return;
             }
 
@@ -1343,6 +1514,18 @@ namespace QTO_Tool
                 }
 
                 calculateSucceeded = true;
+
+                // The freshness stamp gates the formwork window: written at
+                // exactly this one site, the completed take-off. Never let a
+                // stamp failure break the calculation itself.
+                try
+                {
+                    FormworkMethods.WriteStamp(RunQTO.doc);
+                }
+                catch (Exception stampEx)
+                {
+                    Logger.Error("Formwork freshness stamp could not be written.", stampEx);
+                }
             }
 
             catch (Exception ex)

@@ -59,8 +59,8 @@
                         </Grid>
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <Button Name="SetFloor" Content="Set Floor" Grid.Column="0" 
-                                    Grid.Row="1" HorizontalAlignment="Center" 
+                            <Button Name="SetFloor" Content="Set Floor" Grid.Column="0"
+                                    Grid.Row="1" HorizontalAlignment="Center"
                                     Margin="0 20 50 0" Width="400" Height="60"
                                     FontSize="26" Click="SetFloor_Clicked"/>
 
@@ -70,10 +70,20 @@
                                     FontSize="26" Click="StartCheckup_Clicked"/>
                         </StackPanel>
 
+                        <Button Name="PreviewCheckupButton" Content="PREVIEW CHECKUP"
+                                HorizontalAlignment="Center" Margin="0 20 0 0"
+                                Width="400" Height="60" FontSize="26"
+                                Background="#52a0d1" Click="PreviewCheckup_Clicked"/>
+
                         <Button Name="RevertCheckupButton" Content="REVERT CHECKUP"
                                 HorizontalAlignment="Center" Margin="0 20 0 0"
                                 Width="400" Height="60" FontSize="26"
                                 IsEnabled="False" Click="RevertCheckup_Clicked"/>
+
+                        <Button Name="FormworkButton" Content="FORMWORK"
+                                HorizontalAlignment="Center" Margin="0 20 0 0"
+                                Width="400" Height="60" FontSize="26"
+                                Background="#52a0d1" Click="Formwork_Clicked"/>
 
                         <GroupBox Name="CheckupResults" Header="Results"
                                   Margin="10" Visibility="Hidden"

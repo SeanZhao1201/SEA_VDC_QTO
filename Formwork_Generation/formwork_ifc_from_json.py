@@ -33,12 +33,6 @@ from shapely.geometry import Point, Polygon
 MM = 1000.0          # metres -> millimetres
 
 
-def _floor_sort_key(name):
-    if name and name[0] in "Ll" and name[1:].isdigit():
-        return (0, int(name[1:]))
-    return (1, name or "")
-
-
 class Writer:
     def __init__(self):
         f = self.f = ifcopenshell.file(schema="IFC4")
@@ -151,8 +145,10 @@ def convert(json_path, out_path):
     for lv in data["levels"]:
         fl = lv["floor"]
         floor_z[fl] = min(floor_z.get(fl, lv["z"]), lv["z"])
+    # storeys ordered by elevation, not by parsing the floor name — names
+    # are whatever the QTO user typed and carry no format guarantee
     storeys = {fl: w.storey(fl, z) for fl, z in
-               sorted(floor_z.items(), key=lambda kv: _floor_sort_key(kv[0]))}
+               sorted(floor_z.items(), key=lambda kv: kv[1])}
     w._aggregate(w.building, list(storeys.values()))
 
     n_plat = n_sup = 0

@@ -4,7 +4,7 @@
 **props** directly from the open Rhino model. It replaces the per-floor
 fixed-height logic of `../formwork_gen.py` (kept as legacy reference) with
 per-soffit-face platforms and a **downward ray-cast per prop** onto the merged
-solids of the model — so double-height voids (挑空), stepped podium slabs, and
+solids of the model — so double-height voids, stepped podium slabs, and
 partial basements all get correct prop heights automatically.
 
 ## Running in Rhino (7 or 8)

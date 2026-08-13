@@ -40,7 +40,7 @@ formwork for visualization and 4D sequencing, not engineered falsework design
 - `formwork_gen.py` — the legacy IFC-based generator + CLI (Mast4D copy;
   stdlib + ifcopenshell/shapely/numpy). Kept as reference implementation and
   IFC-writing template. Known-wrong on podium floors: one soffit/foot level
-  per floor collapses stepped slabs, and props under voids (挑空) get the
+  per floor collapses stepped slabs, and props under double-height voids get the
   height of a slab that is not there — quantified 2026-07-23 on the sample
   IFC (L02: 138/138 props >50 mm off; L03: 12 props need 7.5–12 m, not
   1.12 m; plots in `out/analysis/`).
@@ -189,7 +189,7 @@ the child Rhino never exits; a child launched with `CreateNoWindow=true` that hi
 dialog — including a licence check for the second seat — hangs invisibly, so a watchdog
 timeout is required, not just a Cancel button.
 
-## Next feature: side forms (边模) — scope decided 2026-08-12, geometry not yet designed
+## Next feature: side forms — scope decided 2026-08-12, geometry not yet designed
 
 Today the generator emits only the **horizontal** temporary works: a soffit platform
 per slab underside plus shoring props. Side forms are next. The scope and reporting
@@ -205,13 +205,13 @@ What already exists and is directly reusable:
 - Slab thickness is already derivable per floor — `scan_slabs()` records both
   `soffit_z` and `slab_top_z`, and the Rhino generator works per soffit face.
 - **Pour-break splitting already computes where construction joints fall** and writes
-  derived slabs whose new edges are precisely where bulkheads (施工缝端模) belong.
+  derived slabs whose new edges are precisely where bulkheads belong.
 
 **Decided (2026-08-12):**
 
 - **Scope v1: slab edge forms + pour-break bulkheads + opening edges** (shaft and
   stair-opening perimeters — the opening inner loops are already in the traced
-  outline, so they are geometrically free). Beam sides (梁侧模) stay in P3; wall and
+  outline, so they are geometrically free). Beam sides stay in P3; wall and
   column faces are out of scope — they belong to a different formwork system (gang
   or crane-cycled forms) and QTO already reports their gross side areas.
 - **Input model: prefer the pour-break derived model when one exists.** Split-derived
@@ -227,7 +227,7 @@ What already exists and is directly reusable:
   `platform | support`. 4D search sets bind on ObjectType and the two are struck at
   different times (bulkheads come off before the adjacent pour), so a property-only
   distinction would push a filtering step onto the Synchro side.
-- **Quantities: net formwork area (模板面积) is reported on the formwork side, not
+- **Quantities: net formwork area is reported on the formwork side, not
   QTO's.** Each side/bulkhead element carries `AREA` in its `QTO Properties` pset
   (same pattern as the props' `HEIGHT_M`), with per-floor totals in the export JSON;
   reports are generated from that JSON by a standalone CPython script, in the same
@@ -257,7 +257,7 @@ elements group per pour piece (one assembly per POUR block) so 4D strike semanti
 fall out of the containment tree; kicker/edge details — likely rejected as
 over-fidelity.
 
-## Pour-break authoring (截断设计) — decided 2026-08-13, not yet built
+## Pour-break authoring — decided 2026-08-13, not yet built
 
 The shipped pour-break pass was reverse-engineered from one PDF: markups →
 `pour_breaks_model.json` → `rhino/split_pourbreaks.py`. The two front-end scripts

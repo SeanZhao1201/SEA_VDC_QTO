@@ -15,7 +15,7 @@ Scene (metres, doc units set to metres):
   L2  slab x[0,20]   y[0,10]  z 6.0 -> 6.2   with 2x2 opening x[4,6] y[2,4]
   beam under L2      x[0,14] y[5.6,6.4] z 5.5 -> 6.0 (downstand, same level)
   column             x[8.8,9.2] y[2.8,3.2]   z 2.6 -> 6.0 (under L2)
-  x in [14,20]: L2 has NO slab below at all (挑空 over nothing -> grade).
+  x in [14,20]: L2 has NO slab below at all (double-height void over nothing -> grade).
 """
 from __future__ import division, print_function
 

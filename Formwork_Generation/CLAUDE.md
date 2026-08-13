@@ -37,6 +37,14 @@ formwork for visualization and 4D sequencing, not engineered falsework design
   test (synthetic podium scene, per-prop numeric asserts) and batch runner
   for the real model; both launched via `Rhino.exe /runscript` from
   `%LOCALAPPDATA%\qto_fw_test\`.
+- `rhino/pourbreak_harvest.py`, `rhino/pourbreak_restore.py`,
+  `rhino/split_pourbreaks.py` — the authored pour-break pipeline (v2,
+  2026-08-13): read-only harvest of `_POURBREAK` curves + pour dots to
+  JSON, faithful restore (the checkup-wipe recovery), and the splitter
+  that runs on a staged copy. Tests: `rhino/test_pourbreaks_headless.py`
+  (synthetic metric scene) and `rhino/test_pourbreaks_model.py` (golden
+  regression against the 2026-07 Bellwether result). Details:
+  `rhino/README.md`.
 - `formwork_gen.py` — the legacy IFC-based generator + CLI (Mast4D copy;
   stdlib + ifcopenshell/shapely/numpy). Kept as reference implementation and
   IFC-writing template. Known-wrong on podium floors: one soffit/foot level
@@ -257,15 +265,18 @@ elements group per pour piece (one assembly per POUR block) so 4D strike semanti
 fall out of the containment tree; kicker/edge details — likely rejected as
 over-fidelity.
 
-## Pour-break authoring — decided 2026-08-13, not yet built
+## Pour-break authoring — decided and built 2026-08-13
 
-The shipped pour-break pass was reverse-engineered from one PDF: markups →
+The original pour-break pass was reverse-engineered from one PDF: markups →
 `pour_breaks_model.json` → `rhino/split_pourbreaks.py`. The two front-end scripts
 (`extract_pourbreaks.py`, `make_breaks_model.py`) were scratchpad-only and are not
-in the repo, the JSON can only express axis-aligned orthogonal cuts
-(`dir: NS|EW` + one coordinate + span), and pour numbering is binary
-(POUR1/POUR2 via the PDF's centroid). Productizing means giving the modeler
-authorship. Decisions:
+in the repo, the v1 JSON could only express axis-aligned orthogonal cuts
+(`dir: NS|EW` + one coordinate + span), and pour numbering was binary
+(POUR1/POUR2 via the PDF's centroid). Productizing meant giving the modeler
+authorship. Decisions (all implemented — see the Files section and
+`rhino/README.md` for the as-built pipeline; the splitter upconverts v1 JSON
+in memory, so the historical Bellwether break set still runs, verified by the
+golden regression):
 
 **Invert the pipeline — curves are the single source of truth.**
 `[optional PDF importer] → curves on a convention layer ← modeler draws/edits
@@ -328,21 +339,35 @@ blocked); offset to the nearest grid line (grid now optional); sliver/volume
 reversions surfaced with reasons. Iteration is cheap — draw, run headless on a
 staged copy, take the report to the engineer.
 
-**Portability (audited 2026-08-13 — "would this survive a non-Sunbreak
-project?"):** the P1 generator already would (metre params ×
+**Hardened by a 30-agent adversarial review (2026-08-13, 18 confirmed
+defects, all fixed and covered by tests):** pour assignment is
+dot-containment first (a concave piece's volume centroid can land across the
+break — side keys alone mislabel notched and re-entrant cuts); originals are
+force-deleted with unlock/show retry so locked or hidden slabs cannot end up
+duplicated in the derived model; harvest enumerates hidden objects
+(symmetric with the wipe); restore refuses floors missing from
+`FloorElevations` instead of fabricating z=0 curves; sampled curve breaks
+keep their `curve_type` through wipe/restore via a `PB_CURVE_TYPE` user
+string; the splitter aborts on a missing breaks JSON rather than falling
+back to a stale staging file; support review checks every soffit elevation
+of a stepped floor; CY is emitted for inches models too (QTO converts both
+ft and in); duplicate floor names warn loudly in harvest and split.
+
+**Portability (audited 2026-08-13, residue cleared in the v2 rework):** the
+P1 generator was already project-agnostic (metre params ×
 `RhinoMath.UnitScale`, configurable `slab_layer_keyword`/`slab_layer_exclude`,
-floors from `FloorElevations` verbatim). The residue is in
-`split_pourbreaks.py` and must go during the v2 rework: (a) drop the
-Feet-only abort and the ft extension constants — adopt the generator's
-metre-params + UnitScale pattern, honoring the JSON `units` field; (b) the
-hardcoded "slab"/"sog"/"topping" layer filter becomes the same params the
-generator has; (c) the Bellwether paths (already listed). Also
-`formwork_ifc_from_json.py::_floor_sort_key` assumes `L<nn>`-style names —
-sort storeys by **elevation** instead (always available; names then carry no
-semantics). Note the v1 JSON could not even express a diagonal cut, so the old
-pipeline was unusable on non-orthogonal buildings — the polyline schema fixes
-that, it is not a nicety. Everything else that varies per project (grade_z,
-prop spacing, `target_sf`, grid, the PDF) is an input, not a coupling.
+floors from `FloorElevations` verbatim). The splitter now matches it: the
+Feet-only abort and ft extension constants are gone (metre constants ×
+UnitScale + a JSON-vs-model unit match check), the "slab"/"sog"/"topping"
+layer filter is the same params the generator has, and the Bellwether paths
+became `PB_*` env vars with doc-adjacent defaults.
+`formwork_ifc_from_json.py` now sorts storeys by **elevation** instead of
+parsing `L<nn>` names. Note the v1 JSON could not even express a diagonal
+cut, so the old pipeline was unusable on non-orthogonal buildings — the
+polyline schema fixes that, it is not a nicety. Everything else that varies
+per project (grade_z, prop spacing, `target_area`, grid, the PDF) is an
+input, not a coupling. The legacy `formwork_gen.py` keeps its own
+`_floor_sort_key` by policy (byte-for-byte Mast4D copy).
 
 ## Known limits
 

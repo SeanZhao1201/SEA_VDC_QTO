@@ -67,6 +67,61 @@ legacy writer: storey elevations are soffit-level (min level z per floor)
 rather than copied from the source IFC's storeys — geometry is absolute, so
 co-registration is unaffected.
 
+## Pour-break authoring (v2)
+
+The modeler draws pour-break curves on the **`_POURBREAK`** layer — lines or
+polylines, any orientation, jogs allowed; optionally on a per-floor sublayer
+`_POURBREAK::<floor>` to pin the floor explicitly — and drops a text dot
+("1", "2", …) inside each pour region to author the pour order. Three
+scripts turn that into a derived model:
+
+- `pourbreak_harvest.py` — **read-only** walk of the `_POURBREAK` tree →
+  `<model>_pourbreaks.json` (schema v2: model-unit world coordinates,
+  polylines + markers, per-item floor binding by sublayer or elevation).
+  Read-only means it fires no document events, so QTO's REVERT CHECKUP
+  survives a harvest. Hidden and locked objects are included (same
+  enumerator as the wipe — a hidden break must still reach the JSON).
+- `pourbreak_restore.py` — the inverse: redraws curves + dots from the JSON.
+  This is the recovery path for the known hazard that the QTO checkup
+  deletes every curve in the document; harvest early, restore after. It
+  ADDS objects (which disables REVERT CHECKUP until the next checkup), so
+  it belongs after the QTO pass. Faithful re-materialization: what was
+  authored on a sublayer goes back there, elevation-bound items go back to
+  the root — a re-harvest reproduces the same JSON byte for byte (sampled
+  non-polyline breaks come back as polylines stamped `PB_CURVE_TYPE` so
+  their curved-bulkhead flag survives). A floor whose name is missing from
+  the document's `FloorElevations` and whose items carry no z is
+  **refused loudly**, not drawn at z=0 — drawing it would rebind the
+  breaks to whatever floor sits nearest zero and cut the wrong slabs.
+- `split_pourbreaks.py` — splits every matching slab on a **staged copy**
+  (never the original), tags pieces `POUR<n>` on suffixed layers with
+  `POUR` / `POUR_FLOOR` / `SOURCE_SLAB` user strings, `WriteFile()`s the
+  derived .3dm and writes the review report. Schema v1 (the PDF-era
+  axis-aligned cuts) upconverts in memory — historical break sets keep
+  working. Units are handled like the generator (metre constants ×
+  `UnitScale`); the feet-only guard is gone, replaced by a JSON-vs-model
+  unit match check, and a missing breaks JSON is a hard stop (no fallback
+  to a stale staging file). Pour numbering is **dot-containment first**: a
+  piece that contains a pour dot takes that dot's number — exact for any
+  break shape (concave pieces whose centroid escapes them, notches routed
+  around openings, re-entrant polylines crossing a slab twice). Only
+  dotless pieces fall back to side-key cells keyed by a
+  guaranteed-interior point; with exactly one marker the rest is pour 2
+  (v1 binary semantics — the golden regression depends on it), and every
+  fallback is summarized in the log. Originals are deleted with an
+  unlock/show-and-retry (`force_delete`) so locked or hidden slabs cannot
+  end up duplicated beside their pieces; an undeletable original aborts
+  that slab's split loudly. The sliver guard is waived when a pour dot
+  sits inside the small piece (an authored small pour is legal). Paths
+  override via `PB_JSON` / `PB_OUT3DM` / `PB_REPORT` env vars.
+
+The report is the engineer-facing review artifact: per-pour soffit area +
+volume (CY on feet models) against the optional `target_area`, minimum
+break-to-support distance (flagged under 1 m — joints belong near
+mid-span; bbox accuracy, a warning not an engineering check), grid offsets
+for axis-parallel segments when a grid is present, and every reverted or
+uncrossed slab with its reason.
+
 ## Headless test loop (no Rhino UI)
 
 - `test_headless.py` — synthetic podium scene (partial basement, stepped L1,
@@ -75,6 +130,19 @@ co-registration is unaffected.
   export checks.
 - `run_on_model.py` — batch export run on the open model; dumps layer census
   and per-level table to `model_run_log.txt`.
+- `test_pourbreaks_headless.py` — synthetic **metric** scene for the
+  pour-break pipeline; one floor per defect class from the 2026-08-13
+  adversarial review: under-drawn diagonal with a snap-noise micro tail
+  (hidden curve), jogged polyline on a locked layer, arc break
+  (curve-type persistence), authored sub-1% corner pour, U-notch whose
+  concave piece loses its centroid, re-entrant break crossing a slab
+  twice, plus SOG exclusion, support-distance flag, unit-mismatch guard,
+  unknown-floor restore refusal, harvest read-only check, and the harvest
+  → wipe → restore → harvest byte-identity round trip.
+- `test_pourbreaks_model.py` — golden regression on the staged Bellwether
+  copy: v1 JSON → upconvert → restore as curves → harvest → split must
+  reproduce the verified 2026-07 result (18 slabs → 36 pieces; per-piece
+  pour label, volume and soffit area within 1 %).
 
 Both are launched by copying the scripts (and a model copy) to
 `%LOCALAPPDATA%\qto_fw_test\` (short, space-free path) and running:

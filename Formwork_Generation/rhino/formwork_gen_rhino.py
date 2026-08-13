@@ -7,7 +7,7 @@ queried from the live model:
 
 * one platform per soffit Z-cluster (stepped/dropped slabs come out right),
 * every prop foot found by shooting a ray straight down from the platform
-  underside onto the merged solids of the model (voids/挑空 handled), with
+  underside onto the merged solids of the model (double-height voids handled), with
   three rules: hit closer than ``min_clear`` or ray starting inside a solid
   -> no prop needed (bearing wall/column/downstand beam); no hit -> stand on
   ``grade_z`` if set, else skip and flag; taller than ``max_prop`` -> TALL tag.

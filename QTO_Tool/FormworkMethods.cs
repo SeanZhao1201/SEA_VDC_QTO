@@ -38,20 +38,25 @@ namespace QTO_Tool
                 string dir = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "qto_fw_test");
-                if (dir.Contains(" "))
-                {
-                    // No fallback: the Python engines HARDCODE this exact
-                    // path as their import root and output folder, so any
-                    // other staging location silently breaks their imports.
-                    // A user name with a space cannot be supported until the
-                    // scripts take a stage override.
-                    throw new InvalidOperationException(
-                        "The staging folder path contains a space (" + dir + ") - " +
-                        "the /runscript launch cannot parse it. Formwork generation " +
-                        "is unavailable on this account.");
-                }
                 Directory.CreateDirectory(dir);
                 return dir;
+            }
+        }
+
+        /// <summary>The space-free requirement belongs ONLY to the Python
+        /// script launches: their path rides bare inside the /runscript
+        /// argument. Command launches (preview checkup) and quoted model
+        /// paths are fine with spaces, so the check must not block them.
+        /// No fallback dir: the engines HARDCODE this staging root as their
+        /// import root, any other location silently breaks imports.</summary>
+        public static void EnsureScriptSafeStaging()
+        {
+            if (StagingDir.Contains(" "))
+            {
+                throw new InvalidOperationException(
+                    "The staging folder path contains a space (" + StagingDir + ") - " +
+                    "the /runscript launch cannot parse a script path there. " +
+                    "Formwork generation is unavailable on this account.");
             }
         }
 
@@ -81,6 +86,7 @@ namespace QTO_Tool
         /// plugin are not reliably visible to _-RunPythonScript runs.</summary>
         public static void ExtractScripts()
         {
+            EnsureScriptSafeStaging();
             Assembly asm = Assembly.GetExecutingAssembly();
             foreach (string name in Scripts)
             {
@@ -270,10 +276,12 @@ namespace QTO_Tool
         }
 
         /// <summary>Write a staged copy of the document (never Save - the
-        /// open document keeps its own path and dirty state).</summary>
-        public static string StageModelCopy(RhinoDoc doc)
+        /// open document keeps its own path and dirty state). Callers pick
+        /// distinct file names so the preview cannot clobber the model a
+        /// running formwork child is reading.</summary>
+        public static string StageModelCopy(RhinoDoc doc, string fileName = "model.3dm")
         {
-            string path = Path.Combine(StagingDir, "model.3dm");
+            string path = Path.Combine(StagingDir, fileName);
             Rhino.FileIO.FileWriteOptions options = new Rhino.FileIO.FileWriteOptions
             {
                 SuppressDialogBoxes = true,
@@ -295,6 +303,29 @@ namespace QTO_Tool
             Dictionary<string, string> envVars, int timeoutMs, out string summary,
             Action<Process> onStarted = null, string errorFileName = null)
         {
+            EnsureScriptSafeStaging();
+            string scriptPath = Path.Combine(StagingDir, scriptName);
+            return RunChildCore(modelPath, "-_RunPythonScript " + scriptPath,
+                scriptName, envVars, timeoutMs, out summary, onStarted,
+                errorFileName);
+        }
+
+        /// <summary>Run a PLUGIN COMMAND (e.g. QTOCheckupReport) in the
+        /// child Rhino - same staging, watchdog and verification rules as
+        /// the script runs. The plugin is registered per-user, so the child
+        /// loads it on demand when the command runs.</summary>
+        public static bool RunChildRhinoCommand(string modelPath, string commandName,
+            Dictionary<string, string> envVars, int timeoutMs, out string summary,
+            Action<Process> onStarted = null, string errorFileName = null)
+        {
+            return RunChildCore(modelPath, "-_" + commandName, commandName,
+                envVars, timeoutMs, out summary, onStarted, errorFileName);
+        }
+
+        static bool RunChildCore(string modelPath, string runscriptPayload,
+            string label, Dictionary<string, string> envVars, int timeoutMs,
+            out string summary, Action<Process> onStarted, string errorFileName)
+        {
             lock (childLock)
             {
                 if (childRunning)
@@ -308,7 +339,6 @@ namespace QTO_Tool
             try
             {
                 string rhinoExe = Process.GetCurrentProcess().MainModule.FileName;
-                string scriptPath = Path.Combine(StagingDir, scriptName);
                 string errorPath = errorFileName == null
                     ? null : Path.Combine(StagingDir, errorFileName);
                 if (errorPath != null && File.Exists(errorPath))
@@ -323,7 +353,7 @@ namespace QTO_Tool
                     args.Append("\"").Append(modelPath).Append("\" ");
                 }
                 args.Append("/nosplash /notemplate ");
-                args.Append("/runscript=\"-_RunPythonScript ").Append(scriptPath).Append("\"");
+                args.Append("/runscript=\"").Append(runscriptPayload).Append("\"");
 
                 ProcessStartInfo psi = new ProcessStartInfo
                 {
@@ -341,7 +371,7 @@ namespace QTO_Tool
                     }
                 }
 
-                Logger.Info("Formwork child run: " + scriptName + " on " +
+                Logger.Info("Formwork child run: " + label + " on " +
                     (modelPath ?? "<new doc>"));
                 // NOT in a using: the Cancel button holds a reference to this
                 // Process after we return; disposing here would turn a late
@@ -351,7 +381,7 @@ namespace QTO_Tool
                 if (!child.WaitForExit(timeoutMs))
                 {
                     try { child.Kill(); } catch { }
-                    summary = scriptName + " timed out after " + (timeoutMs / 1000) +
+                    summary = label + " timed out after " + (timeoutMs / 1000) +
                         " s and was terminated. A hidden dialog (licence check for the " +
                         "second Rhino seat?) is the usual cause - try once with a visible " +
                         "Rhino open to clear it.";
@@ -363,18 +393,18 @@ namespace QTO_Tool
                 {
                     // killed (Cancel) or crashed - "exited within the timeout"
                     // is NOT success
-                    summary = scriptName + " was terminated or crashed (exit code " +
+                    summary = label + " was terminated or crashed (exit code " +
                         exitCode + ").";
                     Logger.Error(summary, null);
                     return false;
                 }
                 if (errorPath != null && File.Exists(errorPath))
                 {
-                    summary = scriptName + " reported a Python error - see " + errorPath;
+                    summary = label + " reported a Python error - see " + errorPath;
                     Logger.Error(summary, null);
                     return false;
                 }
-                summary = scriptName + " finished.";
+                summary = label + " finished.";
                 return true;
             }
             finally

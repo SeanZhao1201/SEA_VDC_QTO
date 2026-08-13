@@ -135,8 +135,14 @@ class Writer:
             "Formwork", None, elements, storey)
 
 
-def convert(json_path, out_path):
-    data = json.loads(Path(json_path).read_text(encoding="utf-8"))
+def convert(json_path, out_path, sideforms_path=None):
+    data = {"levels": [], "panel_thickness": 0.05, "prop_size": 0.15}
+    if json_path:
+        data = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    sides = None
+    if sideforms_path:
+        sides = json.loads(
+            Path(sideforms_path).read_text(encoding="utf-8"))
     panel = data["panel_thickness"]
     prop_size = data["prop_size"]
     w = Writer()
@@ -145,11 +151,17 @@ def convert(json_path, out_path):
     for lv in data["levels"]:
         fl = lv["floor"]
         floor_z[fl] = min(floor_z.get(fl, lv["z"]), lv["z"])
+    if sides:
+        for pn in sides["panels"]:
+            fl = pn["floor"]
+            floor_z[fl] = min(floor_z.get(fl, pn["z0"]), pn["z0"])
     # storeys ordered by elevation, not by parsing the floor name — names
     # are whatever the QTO user typed and carry no format guarantee
     storeys = {fl: w.storey(fl, z) for fl, z in
                sorted(floor_z.items(), key=lambda kv: kv[1])}
-    w._aggregate(w.building, list(storeys.values()))
+    if storeys:
+        # an IfcRelAggregates with empty RelatedObjects is schema-invalid
+        w._aggregate(w.building, list(storeys.values()))
 
     n_plat = n_sup = 0
     counts = defaultdict(int)
@@ -159,8 +171,11 @@ def convert(json_path, out_path):
         regions = [Polygon(r) for r in lv["regions"]]
         holes = lv["holes"]
         for poly, coords in zip(regions, lv["regions"]):
+            # membership by a point guaranteed inside the hole — the
+            # first VERTEX of a hole can sit on a shared boundary and
+            # miss every region
             my_holes = [h for h in holes
-                        if poly.covers(Point(h[0][0], h[0][1]))]
+                        if poly.covers(Polygon(h).representative_point())]
             solid = w._extruded(coords, my_holes, z, panel)
             el = w.proxy("Formwork Soffit Platform", "platform", solid)
             w.pset([el], {"FLOOR": fl})
@@ -193,18 +208,56 @@ def convert(json_path, out_path):
         w._aggregate(assembly, elements)
         w.contain(storeys[fl], [assembly])
 
+    n_side = n_bulk = 0
+    if sides:
+        by_floor = defaultdict(list)
+        for pn in sides["panels"]:
+            depth = pn["z1"] - pn["z0"]
+            if depth <= 0 or len(pn["profile"]) < 4:
+                continue
+            holes = [pn["hole"]] if pn.get("hole") else []
+            solid = w._extruded(pn["profile"], holes, pn["z1"], depth)
+            name = ("Formwork Side Form" if pn["type"] == "side"
+                    else "Formwork Bulkhead")
+            el = w.proxy(name, pn["type"], solid)
+            props = {"FLOOR": pn["floor"], "TYPE": pn["type"],
+                     "AREA_M2": "{0:.3f}".format(pn["area_m2"])}
+            if pn.get("pour") is not None:
+                # pour lives in the pset, not the assembly tree — 4D
+                # search sets filter on QTO Properties (decided v1)
+                props["POUR"] = str(pn["pour"])
+            w.pset([el], props)
+            by_floor[pn["floor"]].append(el)
+            if pn["type"] == "side":
+                n_side += 1
+            else:
+                n_bulk += 1
+        for fl, elements in by_floor.items():
+            assembly = w.f.create_entity(
+                "IfcElementAssembly", w._guid(), w.owner,
+                "Formwork Sides {0}".format(fl), None, None,
+                w._place(), None, None, "NOTDEFINED", "NOTDEFINED")
+            w._aggregate(assembly, elements)
+            w.contain(storeys[fl], [assembly])
+
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     w.f.write(str(out_path))
-    print("wrote {0}: {1} platforms + {2} supports ({3}) across {4} storeys"
-          .format(out_path, n_plat, n_sup, dict(counts), len(storeys)))
+    print("wrote {0}: {1} platforms + {2} supports ({3}) + {4} side forms "
+          "+ {5} bulkheads across {6} storeys".format(
+              out_path, n_plat, n_sup, dict(counts), n_side, n_bulk,
+              len(storeys)))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--json", required=True)
+    ap.add_argument("--json", help="formwork JSON (platforms + props)")
+    ap.add_argument("--sideforms",
+                    help="side-form JSON from sideform_gen_rhino.py")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
-    convert(a.json, a.out)
+    if not a.json and not a.sideforms:
+        ap.error("need --json and/or --sideforms")
+    convert(a.json, a.out, a.sideforms)
 
 
 if __name__ == "__main__":

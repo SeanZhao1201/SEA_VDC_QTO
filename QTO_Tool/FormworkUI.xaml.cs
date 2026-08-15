@@ -138,11 +138,28 @@ namespace QTO_Tool
         private void RefreshDerivedAvailability()
         {
             bool exists = File.Exists(DerivedModel);
-            this.InputDerived.IsEnabled = exists;
+            bool matches = false;
             if (exists)
+            {
+                // The staging folder is machine-wide with one fixed file name,
+                // so mere existence proves nothing: the file may be another
+                // project's, or split from a state this document no longer has.
+                string reason;
+                matches = FormworkMethods.DerivedModelMatches(RunQTO.doc, out reason);
+            }
+            this.InputDerived.IsEnabled = exists && matches;
+            if (exists && matches)
             {
                 this.InputDerived.Content = "Pour-break derived model (built " +
                     File.GetLastWriteTime(DerivedModel).ToString("yyyy-MM-dd HH:mm") + ")";
+            }
+            else if (exists)
+            {
+                // Deliberately NOT flipping the selection to the original
+                // model: formwork generated on the wrong input looks exactly
+                // like a clean run, so a stale derived selection must fail
+                // loudly at the Generate click, never silently switch inputs.
+                this.InputDerived.Content = "Pour-break derived model (STALE - re-run Split)";
             }
             else
             {
@@ -254,9 +271,22 @@ namespace QTO_Tool
                 return;
             }
             string staged;
+            Dictionary<string, object> splitState;
+            DateTime? derivedWriteBefore = null;
             try
             {
                 staged = FormworkMethods.StageModelCopy(RunQTO.doc);
+                // Captured at the same moment as the staged copy: this is the
+                // exact document state the derived model will be split from.
+                splitState = FormworkMethods.CaptureModelState(RunQTO.doc);
+                // A failed or cancelled run must not leave the previous sidecar
+                // blessing whatever file the child left behind - drop it now,
+                // re-issue it only on verified success below.
+                FormworkMethods.DeleteDerivedModelMeta();
+                if (File.Exists(DerivedModel))
+                {
+                    derivedWriteBefore = File.GetLastWriteTimeUtc(DerivedModel);
+                }
             }
             catch (Exception ex)
             {
@@ -271,7 +301,35 @@ namespace QTO_Tool
             };
             AppendLog("--- split pour breaks (child Rhino) ---");
             RunChildAsync(staged, "split_pourbreaks.py", env,
-                "model_pourbreak_log.txt", "pourbreak_error.txt");
+                "model_pourbreak_log.txt", "pourbreak_error.txt",
+                () =>
+                {
+                    try
+                    {
+                        // A clean child exit does not prove the derived model
+                        // was rewritten (an early no-op exit leaves the old
+                        // file untouched): only a fresh write earns the
+                        // sidecar. Without it the file reads as stale, which
+                        // just forces a re-split - the safe direction.
+                        bool rewritten = File.Exists(DerivedModel) &&
+                            (derivedWriteBefore == null ||
+                             File.GetLastWriteTimeUtc(DerivedModel) != derivedWriteBefore.Value);
+                        if (rewritten)
+                        {
+                            FormworkMethods.WriteDerivedModelMeta(splitState);
+                        }
+                        else
+                        {
+                            AppendLog("The split run did not (re)write " + DerivedModel +
+                                " - the derived model stays marked stale.");
+                        }
+                    }
+                    catch (Exception metaEx)
+                    {
+                        AppendLog("Could not record the derived model's source state: " +
+                            metaEx.Message);
+                    }
+                });
         }
 
         private void Generate_Clicked(object sender, RoutedEventArgs e)
@@ -291,6 +349,17 @@ namespace QTO_Tool
                     MessageBox.Show("The pour-break derived model is missing (" +
                         DerivedModel + "). Run SPLIT BREAKS first, or select the " +
                         "original model.");
+                    return;
+                }
+                // Existence is not enough: the staging file names are fixed
+                // machine-wide, so the file may be stale for this document or
+                // belong to a different project - and formwork generated on
+                // the wrong input looks exactly like a clean run.
+                string mismatch;
+                if (!FormworkMethods.DerivedModelMatches(RunQTO.doc, out mismatch))
+                {
+                    MessageBox.Show(mismatch);
+                    RefreshDerivedAvailability();
                     return;
                 }
                 model = DerivedModel;
@@ -367,7 +436,8 @@ namespace QTO_Tool
         }
 
         private void RunChildAsync(string modelPath, string scriptName,
-            Dictionary<string, string> env, string logFile, string errorFile)
+            Dictionary<string, string> env, string logFile, string errorFile,
+            Action onSuccess = null)
         {
             SetBusy(true);
             this.cancelRequested = false;
@@ -376,7 +446,7 @@ namespace QTO_Tool
                 try
                 {
                     string summary;
-                    FormworkMethods.RunChildRhino(modelPath, scriptName, env,
+                    bool ok = FormworkMethods.RunChildRhino(modelPath, scriptName, env,
                         ChildTimeoutMs, out summary, p => this.currentChild = p,
                         errorFile);
                     Dispatcher.Invoke(new Action(() =>
@@ -384,6 +454,10 @@ namespace QTO_Tool
                         AppendLog(summary);
                         AppendLog(FormworkMethods.ReadLogTail(logFile, 40));
                     }));
+                    if (ok && !this.cancelRequested && onSuccess != null)
+                    {
+                        Dispatcher.Invoke(onSuccess);
+                    }
                 }
                 catch (Exception ex)
                 {

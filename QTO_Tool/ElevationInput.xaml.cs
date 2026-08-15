@@ -29,8 +29,16 @@ namespace QTO_Tool
             InitializeComponent();
         }
 
+        // The document this dialog was opened against. The dialog is modeless
+        // and survives File > Open; accepting it then would transplant the
+        // previous project's floor table into the new document.
+        private uint loadedDocSerial = 0;
+
         private void Window_Loaded(object sender, RoutedEventArgs e)
         {
+            Rhino.RhinoDoc activeDoc = Rhino.RhinoDoc.ActiveDoc;
+            this.loadedDocSerial = activeDoc == null ? 0 : activeDoc.RuntimeSerialNumber;
+
             ElevationInput.floorElevations = Methods.RetrieveDictionaryFromDocumentStrings();
 
             if (ElevationInput.floorElevations.Count > 0)
@@ -154,7 +162,10 @@ namespace QTO_Tool
 
         private void Accept_Clicked(object sender, RoutedEventArgs e)
         {
-            ElevationInput.floorElevations.Clear();
+            // Parsed into a local first: the static table (which Calculate,
+            // the exports and the staleness check all read) must only change
+            // once the save into the document has actually succeeded.
+            Dictionary<double, string> edited = new Dictionary<double, string>();
 
             foreach (Grid wrapper in this.ElevationInputWrapper.Children)
             {
@@ -166,7 +177,7 @@ namespace QTO_Tool
                     try
                     {
                         double elevation = Convert.ToDouble(elevationText);
-                        ElevationInput.floorElevations[elevation] = floor;
+                        edited[elevation] = floor;
                     }
                     catch
                     {
@@ -175,7 +186,40 @@ namespace QTO_Tool
                 }
             }
 
-            Methods.SaveDictionaryToDocumentStrings(ElevationInput.floorElevations);
+            try
+            {
+                // This modeless dialog survives File > Open, and the save goes
+                // through the static RunQTO.doc while the dialog read from the
+                // active document - re-fetch so both sides target the same,
+                // live document instead of a disposed one.
+                if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
+                {
+                    RunQTO.doc = Rhino.RhinoDoc.ActiveDoc;
+                }
+
+                // But never accept into a DIFFERENT document than the one this
+                // dialog was opened against - that would transplant the old
+                // project's floor table into the new model.
+                if (RunQTO.doc == null || RunQTO.doc.RuntimeSerialNumber != this.loadedDocSerial)
+                {
+                    MessageBox.Show("The open document changed since this dialog was opened - " +
+                        "nothing was saved. Use SET FLOOR again for the current document.");
+                    this.Close();
+                    return;
+                }
+
+                Methods.SaveDictionaryToDocumentStrings(edited);
+            }
+            catch (Exception ex)
+            {
+                // Closing here would silently claim success while nothing was
+                // persisted; keep the dialog open instead. The static table is
+                // untouched, so calculated results and exports stay valid.
+                MessageBox.Show("The floor table could not be saved into the document: " + ex.Message);
+                return;
+            }
+
+            ElevationInput.floorElevations = edited;
 
             // Raise the custom event when the button is clicked
             ChangeSetFloorButtonColorRequest?.Invoke(this, EventArgs.Empty);

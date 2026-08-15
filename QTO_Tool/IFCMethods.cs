@@ -208,6 +208,48 @@ namespace QTO_Tool
             return buildingElements;
         }
 
+        /// <summary>
+        /// Elements the running export skipped because Rhino could not mesh
+        /// their geometry. Cleared by the export click handler before the run
+        /// and shown to the user afterwards.
+        /// </summary>
+        public static readonly List<string> SkippedMeshElements = new List<string>();
+
+        /// <summary>
+        /// Meshes a template's Brep for the IFC body. Mesh.CreateFromBrep
+        /// returns null when meshing fails, and appending null throws - which
+        /// used to abort the whole export for one marginal solid. Returns null
+        /// so the caller can skip that one element; the skip is logged with
+        /// the element's identity and collected in SkippedMeshElements.
+        /// </summary>
+        private static Mesh MeshForIfcBody(Brep geometry, string elementType, string nameAbb, string id, string layerName)
+        {
+            Mesh[] meshParts = geometry == null
+                ? null
+                : Mesh.CreateFromBrep(geometry, MeshingParameters.QualityRenderMesh);
+
+            Mesh mesh = null;
+
+            if (meshParts != null && meshParts.Length > 0)
+            {
+                mesh = new Mesh();
+                mesh.Append(meshParts);
+            }
+
+            if (mesh == null || mesh.Faces.Count == 0)
+            {
+                string description = elementType + " " + nameAbb + " (" + id + ") on layer '" + layerName + "'";
+
+                SkippedMeshElements.Add(description);
+
+                Logger.Warn("IFC export: could not mesh " + description + "; the element was skipped.");
+
+                return null;
+            }
+
+            return mesh;
+        }
+
         public static List<IfcBuildingElement> CreateBuildingElements(IfcStore model, object template, IfcRelAssociatesMaterial relAssociatesMaterial)
         {
             List<IfcBuildingElement> buildingElements = new List<IfcBuildingElement>();
@@ -228,7 +270,13 @@ namespace QTO_Tool
 
             if (template.GetType() == typeof(QTO_Tool.WallTemplate))
             {
-                meshGeometry.Append(Mesh.CreateFromBrep(((WallTemplate)template).geometry, MeshingParameters.QualityRenderMesh));
+                meshGeometry = MeshForIfcBody(((WallTemplate)template).geometry, "Wall",
+                    ((WallTemplate)template).nameAbb, ((WallTemplate)template).id, ((WallTemplate)template).layerName);
+
+                if (meshGeometry == null)
+                {
+                    return buildingElements;
+                }
 
                 faces = meshGeometry.Faces;
                 vertices = meshGeometry.Vertices;
@@ -246,7 +294,13 @@ namespace QTO_Tool
             }
             else if (template.GetType() == typeof(QTO_Tool.BeamTemplate))
             {
-                meshGeometry.Append(Mesh.CreateFromBrep(((BeamTemplate)template).geometry, MeshingParameters.QualityRenderMesh));
+                meshGeometry = MeshForIfcBody(((BeamTemplate)template).geometry, "Beam",
+                    ((BeamTemplate)template).nameAbb, ((BeamTemplate)template).id, ((BeamTemplate)template).layerName);
+
+                if (meshGeometry == null)
+                {
+                    return buildingElements;
+                }
 
                 faces = meshGeometry.Faces;
                 vertices = meshGeometry.Vertices;
@@ -264,7 +318,13 @@ namespace QTO_Tool
             }
             else if (template.GetType() == typeof(QTO_Tool.ColumnTemplate))
             {
-                meshGeometry.Append(Mesh.CreateFromBrep(((ColumnTemplate)template).geometry, MeshingParameters.QualityRenderMesh));
+                meshGeometry = MeshForIfcBody(((ColumnTemplate)template).geometry, "Column",
+                    ((ColumnTemplate)template).nameAbb, ((ColumnTemplate)template).id, ((ColumnTemplate)template).layerName);
+
+                if (meshGeometry == null)
+                {
+                    return buildingElements;
+                }
 
                 faces = meshGeometry.Faces;
                 vertices = meshGeometry.Vertices;
@@ -282,7 +342,13 @@ namespace QTO_Tool
             }
             else if (template.GetType() == typeof(QTO_Tool.FootingTemplate))
             {
-                meshGeometry.Append(Mesh.CreateFromBrep(((FootingTemplate)template).geometry, MeshingParameters.QualityRenderMesh));
+                meshGeometry = MeshForIfcBody(((FootingTemplate)template).geometry, "Footing",
+                    ((FootingTemplate)template).nameAbb, ((FootingTemplate)template).id, ((FootingTemplate)template).layerName);
+
+                if (meshGeometry == null)
+                {
+                    return buildingElements;
+                }
 
                 faces = meshGeometry.Faces;
                 vertices = meshGeometry.Vertices;
@@ -300,7 +366,13 @@ namespace QTO_Tool
             }
             else if (template.GetType() == typeof(QTO_Tool.ContinuousFootingTemplate))
             {
-                meshGeometry.Append(Mesh.CreateFromBrep(((ContinuousFootingTemplate)template).geometry, MeshingParameters.QualityRenderMesh));
+                meshGeometry = MeshForIfcBody(((ContinuousFootingTemplate)template).geometry, "Continuous footing",
+                    ((ContinuousFootingTemplate)template).nameAbb, ((ContinuousFootingTemplate)template).id, ((ContinuousFootingTemplate)template).layerName);
+
+                if (meshGeometry == null)
+                {
+                    return buildingElements;
+                }
 
                 faces = meshGeometry.Faces;
                 vertices = meshGeometry.Vertices;
@@ -318,7 +390,13 @@ namespace QTO_Tool
             }
             else if (template.GetType() == typeof(QTO_Tool.CurbTemplate))
             {
-                meshGeometry.Append(Mesh.CreateFromBrep(((CurbTemplate)template).geometry, MeshingParameters.QualityRenderMesh));
+                meshGeometry = MeshForIfcBody(((CurbTemplate)template).geometry, "Curb",
+                    ((CurbTemplate)template).nameAbb, ((CurbTemplate)template).id, ((CurbTemplate)template).layerName);
+
+                if (meshGeometry == null)
+                {
+                    return buildingElements;
+                }
 
                 faces = meshGeometry.Faces;
                 vertices = meshGeometry.Vertices;
@@ -336,7 +414,13 @@ namespace QTO_Tool
             }
             else if (template.GetType() == typeof(QTO_Tool.SlabTemplate))
             {
-                meshGeometry.Append(Mesh.CreateFromBrep(((SlabTemplate)template).geometry, MeshingParameters.QualityRenderMesh));
+                meshGeometry = MeshForIfcBody(((SlabTemplate)template).geometry, "Slab",
+                    ((SlabTemplate)template).nameAbb, ((SlabTemplate)template).id, ((SlabTemplate)template).layerName);
+
+                if (meshGeometry == null)
+                {
+                    return buildingElements;
+                }
 
                 faces = meshGeometry.Faces;
                 vertices = meshGeometry.Vertices;
@@ -354,7 +438,13 @@ namespace QTO_Tool
             }
             else if (template.GetType() == typeof(QTO_Tool.StyrofoamTemplate))
             {
-                meshGeometry.Append(Mesh.CreateFromBrep(((StyrofoamTemplate)template).geometry, MeshingParameters.QualityRenderMesh));
+                meshGeometry = MeshForIfcBody(((StyrofoamTemplate)template).geometry, "Styrofoam",
+                    ((StyrofoamTemplate)template).nameAbb, ((StyrofoamTemplate)template).id, ((StyrofoamTemplate)template).layerName);
+
+                if (meshGeometry == null)
+                {
+                    return buildingElements;
+                }
 
                 faces = meshGeometry.Faces;
                 vertices = meshGeometry.Vertices;
@@ -372,7 +462,13 @@ namespace QTO_Tool
             }
             else if (template.GetType() == typeof(QTO_Tool.StairTemplate))
             {
-                meshGeometry.Append(Mesh.CreateFromBrep(((StairTemplate)template).geometry, MeshingParameters.QualityRenderMesh));
+                meshGeometry = MeshForIfcBody(((StairTemplate)template).geometry, "Stair",
+                    ((StairTemplate)template).nameAbb, ((StairTemplate)template).id, ((StairTemplate)template).layerName);
+
+                if (meshGeometry == null)
+                {
+                    return buildingElements;
+                }
 
                 faces = meshGeometry.Faces;
                 vertices = meshGeometry.Vertices;

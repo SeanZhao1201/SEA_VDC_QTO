@@ -113,6 +113,7 @@ namespace QTO_Tool
                 {
                     double numberValue = 0;
                     string textValue = string.Empty;
+                    bool isTextColumn = false;
 
                     int projectColumnIndex = 0;
                     int summaryColumnIndex = 0;
@@ -143,15 +144,24 @@ namespace QTO_Tool
                             projectColumnIndex = model.ProjectHeaders.IndexOf(value);
                             summaryColumnIndex = ExcelWorkbookWriter.SummarySheetHeaders.IndexOf(value);
 
+                            // FLOOR, NAME ABB. and the layer-name segment columns
+                            // carry text; a numeric-looking value there (a floor
+                            // named "2") must not be summed like a quantity.
+                            isTextColumn = value == ExcelWorkbookWriter.NameAbbreviationHeader
+                                || value == ExcelWorkbookWriter.FloorHeader
+                                || layerPropertyColumnHeaders.Contains(value);
+
                             continue;
                         }
 
-                        try
+                        // The first grid column is the object count, not a quantity.
+                        if (i == 0)
                         {
-                            // The first grid column is the object count, not a quantity.
-                            numberValue += i == 0 ? 1 : Convert.ToDouble(value);
+                            numberValue += 1;
+                            continue;
                         }
-                        catch
+
+                        if (isTextColumn)
                         {
                             textValue = value == "N/A" ? "-" : value;
 
@@ -160,6 +170,17 @@ namespace QTO_Tool
                             {
                                 model.UniqueNameAbbreviations.Add(textValue);
                             }
+
+                            continue;
+                        }
+
+                        try
+                        {
+                            numberValue += Convert.ToDouble(value);
+                        }
+                        catch
+                        {
+                            textValue = value == "N/A" ? "-" : value;
                         }
                     }
 

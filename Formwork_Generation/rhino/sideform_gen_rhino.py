@@ -597,8 +597,11 @@ def find_targets_and_obstacles(doc, params, log):
     """(targets, obstacle_geoms) — same layer semantics as the platform
     generator; targets carry object id + POUR user string. Block
     instances (e.g. after QTO_Tool's Blockify, which wraps EVERY object)
-    are exploded one level in-memory, reading layer and user strings from
-    the definition parts. Read-only."""
+    are exploded one level in-memory: layer classification follows the
+    INSTANCE (matching the platform generator and QTO's own
+    checkup/Blockify semantics), while POUR and the other user strings
+    are read from the definition parts (Blockify leaves them there).
+    Read-only."""
     keyword = params["slab_layer_keyword"].lower()
     targets, obstacles = [], []
     n_instances = 0
@@ -648,9 +651,12 @@ def find_targets_and_obstacles(doc, params, log):
                 g = g.Duplicate()
                 if not g.Transform(xf):
                     continue
-                p_layer = doc.Layers[part.Attributes.LayerIndex]
-                p_name = p_layer.Name if p_layer is not None else lname
-                _accept(g, p_name, part.Attributes,
+                # Classify by the INSTANCE's layer, not the part's: the
+                # platform generator and QTO's checkup/Blockify both use
+                # instance-layer semantics, and the two engines disagreeing
+                # about which solids are slabs on the same model was a
+                # confirmed defect. POUR still reads from the part.
+                _accept(g, lname, part.Attributes,
                         "{0}/{1}".format(obj.Id, k))
             continue
         _accept(obj.Geometry, lname, obj.Attributes, str(obj.Id))

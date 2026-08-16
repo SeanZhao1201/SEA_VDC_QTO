@@ -177,6 +177,24 @@ namespace QTO_Tool
                     try
                     {
                         double elevation = Convert.ToDouble(elevationText);
+
+                        // The dictionary indexer silently overwrites on a
+                        // duplicate key, and the old catch message promised a
+                        // "repetitive" warning that could never fire (only
+                        // Convert.ToDouble throws here). First row wins;
+                        // the collision is reported instead of a floor
+                        // silently vanishing.
+                        if (edited.ContainsKey(elevation))
+                        {
+                            Logger.Warn("Floor row rejected: '" + floor + "' reuses elevation " +
+                                elevation + ", already taken by '" + edited[elevation] + "'.");
+
+                            MessageBox.Show(floor + " was not added because elevation " + elevationText +
+                                " is already used by " + edited[elevation] + ". Give each floor its own elevation.");
+
+                            continue;
+                        }
+
                         edited[elevation] = floor;
                     }
                     catch
@@ -187,7 +205,7 @@ namespace QTO_Tool
                         Logger.Warn("Floor row rejected: name '" + floor + "', elevation text '" +
                             elevationText + "' is not a number.");
 
-                        MessageBox.Show(floor + " was not added to the program because the input elevation is not a number, or the elevation is repetitive.");
+                        MessageBox.Show(floor + " was not added to the program because the input elevation is not a number.");
                     }
                 }
             }

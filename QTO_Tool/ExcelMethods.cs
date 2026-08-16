@@ -59,7 +59,10 @@ namespace QTO_Tool
 
                 ExcelWorkbookWriter.Write(model, Resources.template, outputPath);
 
-                Dispatcher.FromThread(newWindowThread).InvokeShutdown();
+                // FromThread returns null until the worker thread has created
+                // its dispatcher; QTOUI's copies of this pattern got the
+                // null-conditional in v1.02, this one was missed.
+                Dispatcher.FromThread(newWindowThread)?.InvokeShutdown();
 
                 if (model.ScrapeError == null)
                 {
@@ -75,7 +78,9 @@ namespace QTO_Tool
             }
             catch (Exception)
             {
-                Dispatcher.FromThread(newWindowThread).InvokeShutdown();
+                // A second NRE thrown from inside this catch would REPLACE the
+                // real export failure in the caller's log and dialog.
+                Dispatcher.FromThread(newWindowThread)?.InvokeShutdown();
 
                 // The caller logs the failure and reports the log file path.
                 throw;

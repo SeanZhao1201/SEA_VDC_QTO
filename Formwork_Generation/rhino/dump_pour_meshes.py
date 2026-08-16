@@ -1,7 +1,9 @@
 #! python 2
 # -*- coding: utf-8 -*-
-"""Dump the split POUR1/POUR2 slab pieces as triangle meshes (feet, world
-coords) for the IFC patcher. Run headless on the DERIVED pourbreaks model:
+"""Dump the split POUR1/POUR2 slab pieces as triangle meshes (MODEL units,
+world coords) for the IFC patcher. The JSON carries meters_per_unit so the
+consumer scales correctly for ft, inch and metric models alike. Run headless
+on the DERIVED pourbreaks model:
     Rhino.exe Bellwether_R7_pourbreaks.3dm /nosplash
         /runscript="-_RunPythonScript <this file>"
 Writes pour_meshes.json to the staging folder. Read-only — saves nothing.
@@ -59,20 +61,29 @@ try:
             "verts": verts,
             "faces": faces,
         })
+    # meters_per_unit is the authoritative scale for the consumer; the
+    # units name is informational. The old dump stamped "ft"
+    # unconditionally while writing raw model units, which corrupted
+    # inch and metric models at the IFC-patch hop.
     with io.open(OUT, "w", encoding="utf-8") as fh:
-        fh.write(u"{0}".format(json.dumps({"units": "ft",
-                                           "pieces": pieces})))
+        fh.write(u"{0}".format(json.dumps({
+            "units": str(doc.ModelUnitSystem),
+            "meters_per_unit": float(Rhino.RhinoMath.UnitScale(
+                doc.ModelUnitSystem, Rhino.UnitSystem.Meters)),
+            "pieces": pieces})))
     Rhino.RhinoApp.WriteLine("dumped {0} pieces".format(len(pieces)))
 except Exception:
     with io.open(os.path.join(STAGE, "dump_error.txt"), "w",
                  encoding="utf-8") as fh:
         fh.write(u"{0}".format(traceback.format_exc()))
 finally:
-    try:
-        Rhino.RhinoDoc.ActiveDoc.Modified = False
-    except Exception:
-        pass
+    # clear Modified ONLY in headless throwaway runs - on a live document
+    # it would mask the user's own unsaved edits
     if os.environ.get("FW_HEADLESS") == "1":
+        try:
+            Rhino.RhinoDoc.ActiveDoc.Modified = False
+        except Exception:
+            pass
         try:
             Rhino.RhinoApp.Exit()
         except Exception:

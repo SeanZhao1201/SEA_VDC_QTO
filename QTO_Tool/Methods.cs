@@ -989,6 +989,21 @@ namespace QTO_Tool
             return result;
         }
 
+        // Areas and lengths report in the ft-based units the takeoff has
+        // always used for feet models: inch models convert (in^2 -> ft^2,
+        // in -> ft), feet models are already there, and any other unit
+        // system passes through unconverted - the same convention the
+        // volume factor above follows.
+        public static double SetAreaConversionFactor(string modelUnit)
+        {
+            return modelUnit == "in" ? 1.0 / 144.0 : 1;
+        }
+
+        public static double SetLengthConversionFactor(string modelUnit)
+        {
+            return modelUnit == "in" ? 1.0 / 12.0 : 1;
+        }
+
         public static void Blockify()
         {
             int objectIndex = 0;

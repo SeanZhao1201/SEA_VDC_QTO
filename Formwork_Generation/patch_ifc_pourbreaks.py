@@ -31,10 +31,49 @@ import ifcopenshell.guid
 import ifcopenshell.util.element as _ue
 import numpy as np
 
-FT = 0.3048
-MM_PER_FT = 304.8
-CY_PER_CF = 0.037037                 # QTO_Tool's ft-model volume factor
 QUANTITY_KEYS = ("VOLUME", "AREA", "PERIMETER", "LENGTH", "HEIGHT")
+
+# Fallback for dumps that predate the meters_per_unit field. Those old dumps
+# stamped "ft" unconditionally, so this map only preserves the historically
+# correct feet-model path; anything else must be re-dumped.
+_METERS_PER_UNIT_BY_NAME = {
+    "ft": 0.3048, "feet": 0.3048,
+    "in": 0.0254, "inch": 0.0254, "inches": 0.0254,
+    "m": 1.0, "meter": 1.0, "meters": 1.0,
+    "mm": 0.001, "millimeter": 0.001, "millimeters": 0.001,
+    "cm": 0.01, "centimeter": 0.01, "centimeters": 0.01,
+}
+
+
+def resolve_unit_scale(data):
+    """(meters_per_unit, mm_per_unit, cy_per_cubic_unit) from the dump.
+
+    The dump's coordinates and volumes are raw MODEL units; the old
+    hardcoded feet constants corrupted inch/metric models here (bbox
+    matching 12x off -> pieces dropped as UNMATCHED, volumes 1728x off).
+    """
+    m_per_unit = data.get("meters_per_unit")
+    if m_per_unit is None:
+        name = str(data.get("units", "")).lower()
+        m_per_unit = _METERS_PER_UNIT_BY_NAME.get(name)
+        if m_per_unit is None:
+            raise SystemExit(
+                "Mesh dump has no meters_per_unit and units {0!r} is not "
+                "recognized - re-run rhino/dump_pour_meshes.py".format(name))
+        print("WARNING: mesh dump predates meters_per_unit; trusting its "
+              "units field ({0}).".format(name))
+    m_per_unit = float(m_per_unit)
+    # Volume follows QTO's convention exactly: ft/in models convert to
+    # cubic yards (0.037037 and 2.1434e-5 - the same factors
+    # Methods.SetVolumeConversionFactor uses), every other unit system
+    # passes through unconverted, so the pieces' VOLUME stays comparable
+    # to the untouched sibling slabs' quantities in the same IFC.
+    name = str(data.get("units", "")).lower()
+    is_imperial = (name in ("ft", "feet", "in", "inch", "inches")
+                   or abs(m_per_unit - 0.3048) < 1e-9
+                   or abs(m_per_unit - 0.0254) < 1e-9)
+    cy_per_cu = (m_per_unit ** 3) / (0.9144 ** 3) if is_imperial else 1.0
+    return m_per_unit, m_per_unit * 1000.0, cy_per_cu
 
 
 def slab_bbox_m(f, settings, slab):
@@ -52,6 +91,7 @@ def main():
 
     data = json.loads(Path(a.meshes).read_text(encoding="utf-8"))
     pieces = data["pieces"]
+    m_per_unit, mm_per_unit, cy_per_cu = resolve_unit_scale(data)
     f = ifcopenshell.open(a.ifc)
     settings = ifcopenshell.geom.settings()
     settings.set("use-world-coords", True)
@@ -71,8 +111,8 @@ def main():
     unmatched = 0
     for pc in pieces:
         b = pc["bbox"]
-        lo_p = np.array([b[0], b[1], b[2]]) * FT
-        hi_p = np.array([b[3], b[4], b[5]]) * FT
+        lo_p = np.array([b[0], b[1], b[2]]) * m_per_unit
+        hi_p = np.array([b[3], b[4], b[5]]) * m_per_unit
         best = None
         for slab, lo, hi in slabs:
             if np.all(lo_p >= lo - tol) and np.all(hi_p <= hi + tol):
@@ -97,11 +137,11 @@ def main():
         f.create_entity("IfcDirection", [0.0, 0.0, 1.0]),
         f.create_entity("IfcDirection", [1.0, 0.0, 0.0]))
 
-    def fbsm(verts_ft, faces):
+    def fbsm(verts_model_units, faces):
         pts = [f.create_entity(
             "IfcCartesianPoint",
-            [v[0] * MM_PER_FT, v[1] * MM_PER_FT, v[2] * MM_PER_FT])
-            for v in verts_ft]
+            [v[0] * mm_per_unit, v[1] * mm_per_unit, v[2] * mm_per_unit])
+            for v in verts_model_units]
         ifc_faces = []
         for tri in faces:
             loop = f.create_entity("IfcPolyLoop",
@@ -138,7 +178,7 @@ def main():
             props = dict(keep)
             props["POUR"] = pc["pour"]
             props["VOLUME"] = "{0:.2f}".format(
-                (pc["vol_cf"] or 0.0) * CY_PER_CF)
+                (pc["vol_cf"] or 0.0) * cy_per_cu)
             props["SOURCE_SLAB"] = slab.Name or slab.GlobalId
             entities = [f.create_entity(
                 "IfcPropertySingleValue", k, None,

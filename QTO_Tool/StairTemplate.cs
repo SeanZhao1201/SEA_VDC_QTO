@@ -159,8 +159,8 @@ namespace QTO_Tool
                 }
             }
 
-            this.treadArea = Math.Round(this.upfacingFaceAreas.Sum(), 2);
-            this.bottomArea = Math.Round(this.downfacingFaceAreas.Sum(), 2);
+            this.treadArea = Math.Round(this.upfacingFaceAreas.Sum() * RunQTO.areaConversionFactor, 2);
+            this.bottomArea = Math.Round(this.downfacingFaceAreas.Sum() * RunQTO.areaConversionFactor, 2);
 
             this.treadCount = this.upfacingFaceAreas.Count;
 
@@ -181,7 +181,7 @@ namespace QTO_Tool
                 this.riserArea = 0;
                 this.sideFaceAreas.AddRange(this.sideAndRiserFaceAreas);
                 this.sideFaces.AddRange(this.sideAndRiserFaces);
-                this.sideArea = Math.Round(this.sideFaceAreas.Sum(), 2);
+                this.sideArea = Math.Round(this.sideFaceAreas.Sum() * RunQTO.areaConversionFactor, 2);
                 return;
             }
 
@@ -270,8 +270,8 @@ namespace QTO_Tool
                 }
             }
 
-            this.riserArea = Math.Round(this.riserFaceAreas.Sum(), 2);
-            this.sideArea = Math.Round(this.sideFaceAreas.Sum(), 2);
+            this.riserArea = Math.Round(this.riserFaceAreas.Sum() * RunQTO.areaConversionFactor, 2);
+            this.sideArea = Math.Round(this.sideFaceAreas.Sum() * RunQTO.areaConversionFactor, 2);
         }
     }
 }

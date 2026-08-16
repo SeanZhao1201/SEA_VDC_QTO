@@ -129,7 +129,13 @@ def main():
     b2_attr.SetUserString("SOURCE_SLAB", "S1")
     b2_def = doc.InstanceDefinitions.Add(
         "B2_blk", "", Point3d.Origin, [b2], [b2_attr])
-    doc.Objects.AddInstanceObject(b2_def, Transform.Identity)
+    # The INSTANCE carries the slab layer, exactly like QTO's Blockify
+    # (it wraps each object with the source object's own attributes) -
+    # classification follows the instance layer, POUR/SOURCE_SLAB are
+    # still read from the definition part.
+    b2_inst_attr = Rhino.DocObjects.ObjectAttributes()
+    b2_inst_attr.LayerIndex = fw.ensure_layer(doc, ["Slab_B2"])
+    doc.Objects.AddInstanceObject(b2_def, Transform.Identity, b2_inst_attr)
     # stepped slab on its own floor: two levels joined by a web — the
     # lower level's panels must stop at ITS top (6.2), not bbox max (6.5)
     step = Brep.CreateBooleanUnion([

@@ -123,7 +123,7 @@ namespace QTO_Tool
                 this.topBrepFace = brep.Faces[topFaceIndex].DuplicateFace(false);
             }
 
-            return area;
+            return Math.Round(area * RunQTO.areaConversionFactor, 2);
         }
 
         double BottomArea(Brep brep, double angleThreshold)
@@ -177,7 +177,7 @@ namespace QTO_Tool
                 area = faceAreas[bottomFaceIndex];
             }
 
-            return area;
+            return Math.Round(area * RunQTO.areaConversionFactor, 2);
         }
 
         double SideArea(Brep brep)
@@ -192,6 +192,10 @@ namespace QTO_Tool
 
                 area += faceArea;
             }
+
+            // The raw sum is in model units; topArea/bottomArea are already
+            // converted, so convert BEFORE subtracting them.
+            area *= RunQTO.areaConversionFactor;
 
             area -= (this.topArea + this.bottomArea);
 

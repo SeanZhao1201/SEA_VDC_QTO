@@ -53,8 +53,10 @@ namespace QTO_Tool
             try
             {
                 RunQTO.doc = doc;
-                RunQTO.volumeConversionFactor = Methods.SetVolumeConversionFactor(
-                    doc.GetUnitSystemName(true, true, true, true));
+                string modelUnit = doc.GetUnitSystemName(true, true, true, true);
+                RunQTO.volumeConversionFactor = Methods.SetVolumeConversionFactor(modelUnit);
+                RunQTO.areaConversionFactor = Methods.SetAreaConversionFactor(modelUnit);
+                RunQTO.lengthConversionFactor = Methods.SetLengthConversionFactor(modelUnit);
                 Logger.StartSession();
                 Logger.Info("Checkup preview report on: " + (doc.Path ?? "<unsaved>"));
 

@@ -135,6 +135,6 @@ rejected as off-brand:
 ## Conventions and gotchas
 
 - Layer names are `_`-separated; `nameAbb` shown everywhere is the first two segments. Quantities are rounded to 2 decimals at computation time, inside template constructors.
-- Volume units: hardcoded conversion to cubic yards for ft/in models (`Methods.SetVolumeConversionFactor`); other model units pass through unconverted.
+- Units: volumes convert to cubic yards for ft/in models (`Methods.SetVolumeConversionFactor`); areas and lengths convert to ft²/ft for inch models (`SetAreaConversionFactor`/`SetLengthConversionFactor`, applied inside the template constructors); other model units pass through unconverted in all three.
 - Comparing floats: `FindFloor` has no tolerance/tie-breaking; duplicate floor elevations silently collapse in the dictionary (elevation is the key), and duplicate floor *names* are allowed.
 - `RunQTO.doc` can go stale if the user switches documents; some paths re-fetch `RhinoDoc.ActiveDoc`, others don't.

@@ -36,6 +36,10 @@ namespace QTO_Tool
         {
             InitializeComponent();
             this.Closing += FormworkUI_Closing;
+
+            // The stale-reason tooltip sits on a DISABLED radio button, and
+            // WPF suppresses tooltips on disabled elements by default.
+            System.Windows.Controls.ToolTipService.SetShowOnDisabled(this.InputDerived, true);
         }
 
         private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -139,15 +143,16 @@ namespace QTO_Tool
         {
             bool exists = File.Exists(DerivedModel);
             bool matches = false;
+            string staleReason = "";
             if (exists)
             {
                 // The staging folder is machine-wide with one fixed file name,
                 // so mere existence proves nothing: the file may be another
                 // project's, or split from a state this document no longer has.
-                string reason;
-                matches = FormworkMethods.DerivedModelMatches(RunQTO.doc, out reason);
+                matches = FormworkMethods.DerivedModelMatches(RunQTO.doc, out staleReason);
             }
             this.InputDerived.IsEnabled = exists && matches;
+            this.InputDerived.ToolTip = null;
             if (exists && matches)
             {
                 this.InputDerived.Content = "Pour-break derived model (built " +
@@ -159,7 +164,12 @@ namespace QTO_Tool
                 // model: formwork generated on the wrong input looks exactly
                 // like a clean run, so a stale derived selection must fail
                 // loudly at the Generate click, never silently switch inputs.
+                // The WHY goes to the tooltip and the session log - "it never
+                // goes green" is otherwise undiagnosable.
                 this.InputDerived.Content = "Pour-break derived model (STALE - re-run Split)";
+                this.InputDerived.ToolTip = staleReason;
+
+                Logger.Info("Derived model marked stale: " + staleReason);
             }
             else
             {
@@ -270,6 +280,20 @@ namespace QTO_Tool
             {
                 return;
             }
+            // Refuse BEFORE the pre-launch side effects: RunChildCore's own
+            // gate (shared with QTOUI's preview checkup, which this window's
+            // runBusy flag does not track) would refuse the launch anyway,
+            // but only after the sidecar was deleted and model.3dm staged
+            // over a file the running child may be reading. A tiny window
+            // remains between this check and the launch; it shrinks the
+            // practical race from the whole preview duration to milliseconds.
+            if (FormworkMethods.ChildRunning)
+            {
+                AppendLog("Another child Rhino run (preview checkup or formwork) is in " +
+                    "progress - try SPLIT again when it finishes.");
+                Logger.Info("Split refused: another child Rhino run is in progress.");
+                return;
+            }
             string staged;
             Dictionary<string, object> splitState;
             DateTime? derivedWriteBefore = null;
@@ -290,7 +314,12 @@ namespace QTO_Tool
             }
             catch (Exception ex)
             {
-                AppendLog("Staging FAILED: " + ex.Message);
+                // This try covers more than staging (fingerprint capture,
+                // breaks-JSON hashing, sidecar delete) - label and log
+                // accordingly.
+                Logger.Error("Split staging or sidecar preparation failed.", ex);
+
+                AppendLog("Split staging/sidecar preparation FAILED: " + ex.Message);
                 return;
             }
             Dictionary<string, string> env = new Dictionary<string, string>
@@ -320,12 +349,20 @@ namespace QTO_Tool
                         }
                         else
                         {
+                            // The signature field symptom "Split succeeds but the
+                            // derived model is always STALE" must be traceable
+                            // from the session file, not just this textbox.
+                            Logger.Warn("Split finished but did not (re)write " + DerivedModel +
+                                "; the derived-model sidecar was withheld.");
+
                             AppendLog("The split run did not (re)write " + DerivedModel +
                                 " - the derived model stays marked stale.");
                         }
                     }
                     catch (Exception metaEx)
                     {
+                        Logger.Error("Could not record the derived model's source state.", metaEx);
+
                         AppendLog("Could not record the derived model's source state: " +
                             metaEx.Message);
                     }
@@ -336,6 +373,15 @@ namespace QTO_Tool
         {
             if (!EnsureFresh())
             {
+                return;
+            }
+            // Same early refusal as Split: staging the original model below
+            // overwrites model.3dm before RunChildCore's gate could refuse.
+            if (FormworkMethods.ChildRunning)
+            {
+                AppendLog("Another child Rhino run (preview checkup or formwork) is in " +
+                    "progress - try GENERATE again when it finishes.");
+                Logger.Info("Generate refused: another child Rhino run is in progress.");
                 return;
             }
             string model;
@@ -358,6 +404,12 @@ namespace QTO_Tool
                 string mismatch;
                 if (!FormworkMethods.DerivedModelMatches(RunQTO.doc, out mismatch))
                 {
+                    // The reason names the exact cause (foreign doc, geometry,
+                    // floors, re-harvested breaks, corrupt sidecar); it must
+                    // outlive the message box.
+                    Logger.Warn("Generate refused: derived model mismatch - " + mismatch);
+                    AppendLog("Generate refused: " + mismatch);
+
                     MessageBox.Show(mismatch);
                     RefreshDerivedAvailability();
                     return;
@@ -372,6 +424,8 @@ namespace QTO_Tool
                 }
                 catch (Exception ex)
                 {
+                    Logger.Error("Generate staging failed.", ex);
+
                     AppendLog("Staging FAILED: " + ex.Message);
                     return;
                 }

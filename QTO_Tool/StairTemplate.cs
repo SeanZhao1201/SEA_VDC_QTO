@@ -91,6 +91,15 @@ namespace QTO_Tool
             }
             else
             {
+                // The "-" bucket is the field logs' most expensive failure
+                // domain; a stair landing there WHILE floors are defined is an
+                // anomaly worth a trace.
+                if (floorElevations.Count > 0)
+                {
+                    Logger.Warn("Stair " + this.id + " on layer '" + this.layerName +
+                        "' has no downward face; its floor was set to \"-\".");
+                }
+
                 this.floor = "-";
             }
         }
@@ -162,6 +171,13 @@ namespace QTO_Tool
             // from the take-off.
             if (this.upfacingFaces.Count == 0)
             {
+                // Quantities are silently reshaped here (tread count 0, riser
+                // 0, all vertical-ish area as side) - a field report about
+                // wrong stair numbers needs to see WHICH stairs degraded.
+                Logger.Warn("Stair " + this.id + " on layer '" + this.layerName +
+                    "' has no tread-like face; riser area set to 0 and all near-vertical " +
+                    "faces counted as side area.");
+
                 this.riserArea = 0;
                 this.sideFaceAreas.AddRange(this.sideAndRiserFaceAreas);
                 this.sideFaces.AddRange(this.sideAndRiserFaces);

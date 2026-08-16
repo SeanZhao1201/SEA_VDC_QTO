@@ -66,6 +66,22 @@ namespace QTO_Tool
         static readonly object childLock = new object();
         static bool childRunning;
 
+        /// <summary>True while a child Rhino launched by this plugin is
+        /// running (the gate is shared with QTOUI's preview checkup). Exposed
+        /// so callers can refuse a run BEFORE their pre-launch side effects -
+        /// deleting the derived-model sidecar, overwriting model.3dm - which
+        /// RunChildCore's own refusal would come too late to protect.</summary>
+        public static bool ChildRunning
+        {
+            get
+            {
+                lock (childLock)
+                {
+                    return childRunning;
+                }
+            }
+        }
+
         // Logical resource names must match the csproj LogicalName entries.
         static readonly string[] Scripts = new string[]
         {
@@ -402,6 +418,11 @@ namespace QTO_Tool
             }
             catch (Exception ex)
             {
+                // Swallow-but-record: a recurring IO/JSON failure on the
+                // sidecar must be visible in the session file, not only in the
+                // out reason (which some callers discard).
+                Logger.Error("Derived-model sidecar check failed.", ex);
+
                 reason = "The derived model's source record could not be checked (" + ex.Message +
                     "). Re-run SPLIT BREAKS.";
                 return false;

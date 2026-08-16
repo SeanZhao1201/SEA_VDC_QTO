@@ -114,6 +114,8 @@ namespace QTO_Tool
             }
             catch (Exception ex)
             {
+                Logger.Error("SET FLOOR could not open the floor dialog.", ex);
+
                 MessageBox.Show(ex.ToString());
             }
         }
@@ -121,32 +123,72 @@ namespace QTO_Tool
         // Event handler to change the color in Page1
         private void ChangeSetFloorButtonColor(object sender, EventArgs e)
         {
-            if (ElevationInput.floorElevations.Count > 0)
+            // Raised from outside Accept_Clicked's try - an exception here
+            // would escape to the WPF dispatcher with no log record.
+            try
             {
-                this.SetFloor.Background = (Brush)new System.Windows.Media.BrushConverter().ConvertFrom("#98AD80");
+                if (ElevationInput.floorElevations.Count > 0)
+                {
+                    this.SetFloor.Background = (Brush)new System.Windows.Media.BrushConverter().ConvertFrom("#98AD80");
+                }
+                else
+                {
+                    // A cleared table must not keep asserting floors are set - the
+                    // empty floor table is the field logs' most expensive failure.
+                    this.SetFloor.Background = Brushes.Firebrick;
+                }
+
+                // Calculated results carry the floor strings of the OLD table; an
+                // export now would bucket them under floors the document no longer
+                // has (the IFC routes renamed floors to "Unassigned" silently).
+                if (this.ExportExcelButton.IsEnabled || this.ExportIFC.IsEnabled)
+                {
+                    ExportsBlockedByFloorEdit();
+                }
             }
-            else
+            catch (Exception ex)
             {
-                // A cleared table must not keep asserting floors are set - the
-                // empty floor table is the field logs' most expensive failure.
-                this.SetFloor.Background = Brushes.Firebrick;
+                Logger.Error("Floor-change handler failed.", ex);
+            }
+        }
+
+        /// <summary>
+        /// The staleness gate. Also re-checked at export click time: the floor
+        /// table can change without the Accept event ever firing (the modeless
+        /// dialog reloads it from the document the moment it opens - e.g.
+        /// after File > Open), so the event-driven check alone is bypassable.
+        /// True = the table changed since Calculate; exports were disabled and
+        /// the user was told.
+        /// </summary>
+        private bool ExportsBlockedByFloorEdit()
+        {
+            if (this.floorsAtCalculate == null ||
+                FloorTablesEqual(this.floorsAtCalculate, ElevationInput.floorElevations))
+            {
+                return false;
             }
 
-            // Calculated results carry the floor strings of the OLD table; an
-            // export now would bucket them under floors the document no longer
-            // has (the IFC routes renamed floors to "Unassigned" silently).
-            if ((this.ExportExcelButton.IsEnabled || this.ExportIFC.IsEnabled)
-                && this.floorsAtCalculate != null
-                && !FloorTablesEqual(this.floorsAtCalculate, ElevationInput.floorElevations))
+            this.ExportExcelButton.IsEnabled = false;
+            this.ExportIFC.IsEnabled = false;
+
+            Logger.Info("Floor table changed after Calculate; exports disabled until the next Calculate. " +
+                "At Calculate: " + FloorTableDescription(this.floorsAtCalculate) +
+                " | Now: " + FloorTableDescription(ElevationInput.floorElevations));
+
+            MessageBox.Show("The floor table changed after CALCULATE. The calculated results still " +
+                "use the old floors, so the exports were disabled - run CALCULATE again to refresh them.");
+
+            return true;
+        }
+
+        private static string FloorTableDescription(Dictionary<double, string> table)
+        {
+            if (table == null || table.Count == 0)
             {
-                this.ExportExcelButton.IsEnabled = false;
-                this.ExportIFC.IsEnabled = false;
-
-                Logger.Info("Floor table changed after Calculate; exports disabled until the next Calculate.");
-
-                MessageBox.Show("The floor table changed after CALCULATE. The calculated results still " +
-                    "use the old floors, so the exports were disabled - run CALCULATE again to refresh them.");
+                return "(empty)";
             }
+
+            return String.Join(", ", table.OrderBy(kv => kv.Key).Select(kv => kv.Value + "@" + kv.Key));
         }
 
         private static bool FloorTablesEqual(Dictionary<double, string> a, Dictionary<double, string> b)
@@ -1560,6 +1602,28 @@ namespace QTO_Tool
                 this.ExportExcelButton.IsEnabled = true;
                 this.ExportIFC.IsEnabled = true;
 
+                // Snapshot the floor table these results were computed with, so
+                // a later floor edit can invalidate the exports. This MUST
+                // happen before any MessageBox below: the boxes pump the
+                // dispatcher and the modeless floor dialog stays clickable
+                // under them, so a floor edit accepted at that moment has to
+                // read as a change AGAINST this snapshot - not get folded into
+                // it, which would defeat the staleness check for good.
+                this.floorsAtCalculate = new Dictionary<double, string>(ElevationInput.floorElevations);
+
+                // The freshness stamp gates the formwork window: written at
+                // exactly this one site, the completed take-off, and before the
+                // message pump for the same reason as the snapshot. Never let a
+                // stamp failure break the calculation itself.
+                try
+                {
+                    FormworkMethods.WriteStamp(RunQTO.doc);
+                }
+                catch (Exception stampEx)
+                {
+                    Logger.Error("Formwork freshness stamp could not be written.", stampEx);
+                }
+
                 Dispatcher.FromThread(newWindowThread)?.InvokeShutdown();
 
                 if (badGeometryCount > 0)
@@ -1577,23 +1641,10 @@ namespace QTO_Tool
                         "Start Checkup + Calculate if they belong in it.");
                 }
 
+                // Last statement of the try: a throw anywhere above (including
+                // the message-pumping boxes) must not leave this true, or the
+                // catch's error dialogs would be followed by the success one.
                 calculateSucceeded = true;
-
-                // Snapshot the floor table these results were computed with, so
-                // a later floor edit can invalidate the exports.
-                this.floorsAtCalculate = new Dictionary<double, string>(ElevationInput.floorElevations);
-
-                // The freshness stamp gates the formwork window: written at
-                // exactly this one site, the completed take-off. Never let a
-                // stamp failure break the calculation itself.
-                try
-                {
-                    FormworkMethods.WriteStamp(RunQTO.doc);
-                }
-                catch (Exception stampEx)
-                {
-                    Logger.Error("Formwork freshness stamp could not be written.", stampEx);
-                }
             }
 
             catch (Exception ex)
@@ -1800,6 +1851,11 @@ namespace QTO_Tool
 
         private void Export_Excel_Clicked(object sender, RoutedEventArgs e)
         {
+            if (ExportsBlockedByFloorEdit())
+            {
+                return;
+            }
+
             try
             {
                 Logger.Info("Excel export started.");
@@ -1926,6 +1982,11 @@ namespace QTO_Tool
 
         private void Export_IFC_Clicked(object sender, RoutedEventArgs e)
         {
+            if (ExportsBlockedByFloorEdit())
+            {
+                return;
+            }
+
             try
             {
                 System.Windows.Forms.SaveFileDialog saveFileDialog = new System.Windows.Forms.SaveFileDialog();

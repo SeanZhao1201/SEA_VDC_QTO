@@ -181,6 +181,12 @@ namespace QTO_Tool
                     }
                     catch
                     {
+                        // A silently missing row shifts every nearest-neighbor
+                        // floor bucket, so the rejection must survive in the
+                        // session log, not just this dismissable box.
+                        Logger.Warn("Floor row rejected: name '" + floor + "', elevation text '" +
+                            elevationText + "' is not a number.");
+
                         MessageBox.Show(floor + " was not added to the program because the input elevation is not a number, or the elevation is repetitive.");
                     }
                 }
@@ -202,6 +208,13 @@ namespace QTO_Tool
                 // project's floor table into the new model.
                 if (RunQTO.doc == null || RunQTO.doc.RuntimeSerialNumber != this.loadedDocSerial)
                 {
+                    // Without this line the field symptom is indistinguishable
+                    // from "the user never set floors".
+                    Logger.Warn("Floor save refused: the dialog was opened against document serial " +
+                        this.loadedDocSerial + " but the current document is " +
+                        (RunQTO.doc == null ? "<none>" : RunQTO.doc.RuntimeSerialNumber + " (" + (RunQTO.doc.Path ?? "<unsaved>") + ")") +
+                        "; nothing was saved.");
+
                     MessageBox.Show("The open document changed since this dialog was opened - " +
                         "nothing was saved. Use SET FLOOR again for the current document.");
                     this.Close();
@@ -215,6 +228,11 @@ namespace QTO_Tool
                 // Closing here would silently claim success while nothing was
                 // persisted; keep the dialog open instead. The static table is
                 // untouched, so calculated results and exports stay valid.
+                // This is the field logs' most expensive failure domain (floor
+                // problems bucket the whole take-off under "-"), so the full
+                // exception goes to the session file, not just the box.
+                Logger.Error("The floor table could not be saved into the document.", ex);
+
                 MessageBox.Show("The floor table could not be saved into the document: " + ex.Message);
                 return;
             }

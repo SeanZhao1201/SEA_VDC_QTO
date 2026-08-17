@@ -2,6 +2,46 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Development status — 2026-08-17 (keep this section current when work lands)
+
+Active branch: **`fix/audit-batch-1`** → **PR #17** (open, targets master).
+It carries two bodies of work, both agent-reviewed and green-built:
+
+1. **The 2026-08-15 audit remediation — all 17 confirmed bugs fixed** across
+   three batches (stair face classification, inch-model area/length
+   conversion, slab-beam deduction units, hidden-object exclusion, IFC
+   per-element mesh guard, floor-staleness export gates, derived-model
+   sidecar fencing, `split_pourbreaks` headless guard, driver coding lines,
+   logging coverage, "model file" wording). Field-verified 2026-08-17 on a
+   793-solid model. Two documentation issues: #15 (Excel text-sum),
+   #16 (slab-beam feet assumption). 16 lower-priority *unverified* audit
+   findings remain as a batch-3 candidate list (see the session memory's
+   audit note, or re-derive from the audit titles in issue history).
+2. **Break-sheet pour-break authoring P1** (`breaksheet_gen.py` /
+   `breaksheet_import.py` / FormworkUI MAKE-OPEN-IMPORT): draw pour breaks
+   on a generated plan sheet with TYP typical-floor cells instead of the
+   `_POURBREAK` layer ceremony. Contract: `Formwork_Generation/CLAUDE.md`,
+   "Break sheet". 30-assert headless test ALL PASS in real Rhino 8.
+
+**Pending before merge:** a manual Rhino pass over the formwork/break-sheet
+flows (MAKE → draw → IMPORT → SPLIT on the real model); re-run
+`test_pourbreaks_model.py` (golden) and `test_sideforms_headless.py` (its
+scene changed with the instance-layer fix) via the dev loop.
+
+**Agreed next phases (not started):** break-sheet P2 = near-TYP merge UI,
+auto-import-on-Split + dirty badge, advisory pour areas/grid offsets in the
+import summary; P3 = read-only conduit rendering of the breaks JSON in the
+live model, named Option-1/2 sheets. Grid-line furniture is deferred: the
+user's grids come from imported PDF/DWG files with arbitrary layer names;
+the osnap-able slab outlines are the drawing reference for now.
+
+Build with the machine-local SDK when no system one exists:
+`%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe build QTO_Tool\QTO_Tool.csproj -c Release`.
+Headless test loop: stage `Formwork_Generation/rhino/*.py` into
+`%LOCALAPPDATA%\qto_fw_test`, then
+`Rhino.exe /nosplash /notemplate /runscript="-_RunPythonScript <staged test>"`
+with `FW_HEADLESS=1`; reports land next to the staged scripts.
+
 ## What this is
 
 A Windows-only Rhino 7 plugin (`QTO_Tool`) for concrete quantity takeoff: it validates solid geometry in a Rhino model, computes per-element quantities (volumes, face areas, lengths) from Breps, groups elements by floor, and exports to Excel and IFC. The solution also contains `Turner_Seattle_VDC_Server`, an unrelated standalone WPF app (SDK-style, net472) that reads QTO Excel output into MySQL — it does not reference the plugin project.

@@ -218,7 +218,7 @@ namespace QTO_Tool
                 {
                     MessageBoxResult confirm = MessageBox.Show(
                         "The harvested breaks were taken from a DIFFERENT model:\n" +
-                        source + "\n\nUse them on this document anyway?",
+                        source + "\n\nUse them on this model file anyway?",
                         "Breaks from another model", MessageBoxButton.OKCancel);
                     return confirm == MessageBoxResult.OK;
                 }
@@ -256,7 +256,7 @@ namespace QTO_Tool
             }
             MessageBoxResult confirm = MessageBox.Show(
                 "Restore re-draws the harvested break curves and pour dots into the " +
-                "OPEN document. Adding objects disables REVERT CHECKUP until the next " +
+                "OPEN model file. Adding objects disables REVERT CHECKUP until the next " +
                 "successful checkup. Continue?",
                 "Restore pour breaks", MessageBoxButton.OKCancel);
             if (confirm != MessageBoxResult.OK)

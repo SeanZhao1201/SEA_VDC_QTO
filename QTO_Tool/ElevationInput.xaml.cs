@@ -233,8 +233,8 @@ namespace QTO_Tool
                         (RunQTO.doc == null ? "<none>" : RunQTO.doc.RuntimeSerialNumber + " (" + (RunQTO.doc.Path ?? "<unsaved>") + ")") +
                         "; nothing was saved.");
 
-                    MessageBox.Show("The open document changed since this dialog was opened - " +
-                        "nothing was saved. Use SET FLOOR again for the current document.");
+                    MessageBox.Show("The open model file changed since this dialog was opened - " +
+                        "nothing was saved. Use SET FLOOR again for the current model file.");
                     this.Close();
                     return;
                 }
@@ -249,9 +249,9 @@ namespace QTO_Tool
                 // This is the field logs' most expensive failure domain (floor
                 // problems bucket the whole take-off under "-"), so the full
                 // exception goes to the session file, not just the box.
-                Logger.Error("The floor table could not be saved into the document.", ex);
+                Logger.Error("The floor table could not be saved into the model file.", ex);
 
-                MessageBox.Show("The floor table could not be saved into the document: " + ex.Message);
+                MessageBox.Show("The floor table could not be saved into the model file: " + ex.Message);
                 return;
             }
 

@@ -242,7 +242,7 @@ namespace QTO_Tool
             if (FormworkMethods.FormworkGeometryPresent(RunQTO.doc))
             {
                 MessageBox.Show("Formwork geometry (" + FormworkMethods.FormworkLayer +
-                    " layer) is present in this document - the checkup (and its " +
+                    " layer) is present in this model file - the checkup (and its " +
                     "preview) is disabled until it is removed.");
                 return;
             }
@@ -334,8 +334,17 @@ namespace QTO_Tool
                 int otherLost = num("before", "other") - num("after", "other");
                 int rebuilt = num("before", "instances") + num("before", "meshes");
 
-                string text = "PREVIEW - the open document was NOT touched.\n\n" +
-                    (string)report["summary"] + "\n\n" +
+                // The child's summary can carry an undo-record notice that only
+                // describes the CHILD's throwaway run - shown here it reads as
+                // if REVERT would be unavailable for the real checkup, which is
+                // false, so it is dropped from the preview.
+                string childSummary = string.Join("\n",
+                    ((string)report["summary"] ?? "")
+                        .Split('\n')
+                        .Where(line => !line.Contains("REVERT CHECKUP is unavailable")));
+
+                string text = "PREVIEW - the open model file was NOT touched.\n\n" +
+                    childSummary + "\n\n" +
                     "Running the real checkup would DELETE (never re-added):\n" +
                     "  " + curvesLost + " curve(s)" +
                     (pbCurvesLost > 0
@@ -386,7 +395,7 @@ namespace QTO_Tool
             {
                 this.StartCheckup.IsEnabled = false;
                 MessageBox.Show("Formwork geometry (" + FormworkMethods.FormworkLayer +
-                    " layer) is present in this document. Start Checkup is disabled " +
+                    " layer) is present in this model file. Start Checkup is disabled " +
                     "until it is removed - purge the formwork or work on a copy.");
                 return;
             }

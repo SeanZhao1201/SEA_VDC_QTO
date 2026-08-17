@@ -272,7 +272,8 @@ namespace QTO_Tool
             }
             if (doc.Modified)
             {
-                reason = "Take-off is current, but the document has unsaved changes.";
+                // "model file", not "document" - VDC vocabulary (2026-08-17).
+                reason = "Take-off is current, but the model file has unsaved changes.";
                 return FormworkStampStatus.Unsaved;
             }
             reason = "Take-off is current (" + count + " solids, " + floors.Count + " floors).";
@@ -383,9 +384,9 @@ namespace QTO_Tool
                 string docPath = doc.Path ?? "";
                 if (!string.Equals(metaDocPath, docPath, StringComparison.OrdinalIgnoreCase))
                 {
-                    reason = "The derived model was split from a DIFFERENT document (" +
+                    reason = "The derived model was split from a DIFFERENT model file (" +
                         (metaDocPath.Length == 0 ? "<unsaved>" : metaDocPath) +
-                        "). Re-run SPLIT BREAKS on this document.";
+                        "). Re-run SPLIT BREAKS on this model file.";
                     return false;
                 }
 

@@ -21,6 +21,7 @@ namespace QTO_Tool
         internal const string SummaryTableName = "SUMMARY_TABLE";
         internal const string NumberFormat = "#,#.00";
         internal const string NameAbbreviationHeader = "NAME ABB.";
+        internal const string FloorHeader = "FLOOR";
 
         internal static readonly List<string> SummarySheetHeaders = new List<string>
         {
@@ -31,7 +32,7 @@ namespace QTO_Tool
 
         internal static readonly List<string> ProjectSheetHeaders = new List<string>
         {
-            "COUNT", NameAbbreviationHeader, "FLOOR", "GROSS VOLUME", "NET VOLUME", "BOTTOM AREA", "OPENING AREA",
+            "COUNT", NameAbbreviationHeader, FloorHeader, "GROSS VOLUME", "NET VOLUME", "BOTTOM AREA", "OPENING AREA",
             "TOP AREA", "SIDE AREA", "END AREA", "SIDE-1", "SIDE-2", "EDGE AREA", "TREAD AREA",
             "RISER AREA", "TREAD COUNT", "LENGTH", "HEIGHT", "PERIMETER", "OPENING PERIMETER"
         };

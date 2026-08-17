@@ -59,7 +59,10 @@ namespace QTO_Tool
 
                 ExcelWorkbookWriter.Write(model, Resources.template, outputPath);
 
-                Dispatcher.FromThread(newWindowThread).InvokeShutdown();
+                // FromThread returns null until the worker thread has created
+                // its dispatcher; QTOUI's copies of this pattern got the
+                // null-conditional in v1.02, this one was missed.
+                Dispatcher.FromThread(newWindowThread)?.InvokeShutdown();
 
                 if (model.ScrapeError == null)
                 {
@@ -75,7 +78,9 @@ namespace QTO_Tool
             }
             catch (Exception)
             {
-                Dispatcher.FromThread(newWindowThread).InvokeShutdown();
+                // A second NRE thrown from inside this catch would REPLACE the
+                // real export failure in the caller's log and dialog.
+                Dispatcher.FromThread(newWindowThread)?.InvokeShutdown();
 
                 // The caller logs the failure and reports the log file path.
                 throw;
@@ -113,6 +118,7 @@ namespace QTO_Tool
                 {
                     double numberValue = 0;
                     string textValue = string.Empty;
+                    bool isTextColumn = false;
 
                     int projectColumnIndex = 0;
                     int summaryColumnIndex = 0;
@@ -143,15 +149,24 @@ namespace QTO_Tool
                             projectColumnIndex = model.ProjectHeaders.IndexOf(value);
                             summaryColumnIndex = ExcelWorkbookWriter.SummarySheetHeaders.IndexOf(value);
 
+                            // FLOOR, NAME ABB. and the layer-name segment columns
+                            // carry text; a numeric-looking value there (a floor
+                            // named "2") must not be summed like a quantity.
+                            isTextColumn = value == ExcelWorkbookWriter.NameAbbreviationHeader
+                                || value == ExcelWorkbookWriter.FloorHeader
+                                || layerPropertyColumnHeaders.Contains(value);
+
                             continue;
                         }
 
-                        try
+                        // The first grid column is the object count, not a quantity.
+                        if (i == 0)
                         {
-                            // The first grid column is the object count, not a quantity.
-                            numberValue += i == 0 ? 1 : Convert.ToDouble(value);
+                            numberValue += 1;
+                            continue;
                         }
-                        catch
+
+                        if (isTextColumn)
                         {
                             textValue = value == "N/A" ? "-" : value;
 
@@ -160,6 +175,17 @@ namespace QTO_Tool
                             {
                                 model.UniqueNameAbbreviations.Add(textValue);
                             }
+
+                            continue;
+                        }
+
+                        try
+                        {
+                            numberValue += Convert.ToDouble(value);
+                        }
+                        catch
+                        {
+                            textValue = value == "N/A" ? "-" : value;
                         }
                     }
 

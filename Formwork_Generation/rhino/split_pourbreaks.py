@@ -828,18 +828,36 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        with io.open(os.path.join(STAGE, "pourbreak_error.txt"), "w",
-                     encoding="utf-8") as fh:
-            fh.write(u"{0}".format(traceback.format_exc()))
-    finally:
+    # The splitter force-deletes original slabs and adds pour pieces on
+    # whatever document it is handed. It is meant ONLY for the staged
+    # copies that the plugin and the dev loop open in a headless child
+    # (both set FW_HEADLESS=1). Typed interactively it would shred the
+    # live model AND clear its Modified flag, so it refuses to run - the
+    # same stance as the QTOCheckupReport worker command.
+    if os.environ.get("FW_HEADLESS") != "1":
+        Rhino.RhinoApp.WriteLine(
+            "split_pourbreaks is the headless worker behind the formwork "
+            "SPLIT BREAKS button and only runs in a child Rhino on a "
+            "staged copy (FW_HEADLESS=1). Nothing was changed.")
+    else:
         try:
-            Rhino.RhinoDoc.ActiveDoc.Modified = False
+            main()
         except Exception:
-            pass
-        if os.environ.get("FW_HEADLESS") == "1":
+            with io.open(os.path.join(STAGE, "pourbreak_error.txt"), "w",
+                         encoding="utf-8") as fh:
+                fh.write(u"{0}".format(traceback.format_exc()))
+            # a swallowed failure looks exactly like a clean run; the
+            # sibling engines all re-raise
+            raise
+        finally:
+            # clear Modified ONLY here, in the headless throwaway run -
+            # on a live document it would mask the user's own unsaved
+            # edits (sideform_gen got this fix first; the splitter is
+            # now aligned)
+            try:
+                Rhino.RhinoDoc.ActiveDoc.Modified = False
+            except Exception:
+                pass
             try:
                 Rhino.RhinoApp.Exit()
             except Exception:

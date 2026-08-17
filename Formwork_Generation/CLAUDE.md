@@ -50,6 +50,13 @@ formwork for visualization and 4D sequencing, not engineered falsework design
   (2026-08-13): edge/opening classification by ray-cast suppression and
   neighbour probing, net formwork areas, generate/export/purge modes.
   See the Side forms section below and `rhino/README.md`.
+- `rhino/breaksheet_gen.py`, `rhino/breaksheet_import.py`,
+  `rhino/test_breaksheet_headless.py` — the BREAK SHEET authoring surface
+  (P1, 2026-08-17): generates a plan-cell sheet (one cell per
+  exact-fingerprint floor group — the typical-floor collapse), imports the
+  drawn sheet back to JSON v2 with explicit TYP fan-out. Both run
+  IN-PROCESS on `Rhino.FileIO.File3dm` (no child Rhino, live model never
+  touched). See "Break sheet" under Pour-break authoring below.
 - `formwork_gen.py` — the legacy IFC-based generator + CLI (Mast4D copy;
   stdlib + ifcopenshell/shapely/numpy). Kept as reference implementation and
   IFC-writing template. Known-wrong on podium floors: one soffit/foot level
@@ -354,10 +361,38 @@ accepted with mitigations rather than QTO changes:
   2026-08-13); an "ignore `_`-prefixed layers, with a logged count" patch is a
   v1.1 candidate, not part of this work.
 
-Target state once `FormworkUI` exists: breaks as pure data (doc user text /
-JSON) picked with `GetPoint` and rendered via a **display conduit** — never in
-the `ObjectTable`, so both hazards vanish; the layer path then remains as a
-power-user back door feeding the same JSON.
+**Break sheet — the primary authoring surface since P1 (2026-08-17,
+decided over the earlier GetPoint/conduit target state after a judged
+design study; field feedback drove it).** `MAKE BREAK SHEET` in FormworkUI
+generates `breaksheet.3dm` in staging: one plan cell per floor GROUP
+(floors with byte-identical quantized slab-footprint fingerprints share a
+TYP cell — proven on the real Bellwether-class model, tower collapsed
+5+5; near-identical groups are reported, never auto-merged). Locked
+furniture per cell: per-slab top-face outlines (existing deck joints stay
+visible — the L01 lesson), opening loops, support bbox footprints, frame,
+label; anything the user draws on an unlocked layer inside a frame is a
+break (open curve) or pour marker (numbered text dot) — no layer
+discipline. `IMPORT SHEET` reads the drawn file via `File3dm`, binds by
+cell containment (floor NAME binding, stronger than nearest-Z), fans TYP
+cells out explicitly per member floor, and REFUSES totally on straddling/
+orphan/closed curves with the JSON untouched. Both scripts run
+**in-process** on `Rhino.FileIO.File3dm` — no child Rhino, the live model
+file is never written to, REVERT CHECKUP is unaffected. Invariants the
+30-assert headless test pins: floors without a cell on the sheet keep
+their previous JSON entries verbatim (hidden/renamed slabs must never
+cause silent break loss); carried-in ink counts toward the cell extents
+(over-drawn harvested lines stay in-frame); `curve_type` survives the
+round trip via `PB_CURVE_TYPE`; slab selection matches the splitter's
+keyword/excludes; a MAKE-then-IMPORT of an untouched sheet reproduces the
+JSON (ids/ordering included; `provenance` is surface-specific). The
+sidecar `breaksheet.meta.json` carries the cell map + source doc path and
+is required for import. The C# handlers judge each run by what changed on
+disk (error file + mtime), never by the previous run's log.
+
+Longer-term in-model rendering: a **read-only display conduit** of the
+current JSON remains the P3 target (no editor debt); the original
+GetPoint-authoring idea is superseded by the sheet. The layer path below
+remains the power-user back door feeding the same JSON.
 
 **Cut semantics v2:** a break is a **plan polyline — any orientation, jogs
 allowed** (routing around openings is normal practice); arbitrary planar curves

@@ -107,7 +107,7 @@ namespace QTO_Tool
             {
                 area -= (faceAreas[topFaceIndex] + faceAreas[bottomFaceIndex]);
 
-                area = Math.Round(area, 2);
+                area = Math.Round(area * RunQTO.areaConversionFactor, 2);
             }
 
             return area;
@@ -119,7 +119,7 @@ namespace QTO_Tool
 
             height = _topAndBottomFaceCenters["Top"].Z - _topAndBottomFaceCenters["Bottom"].Z;
 
-            height = Math.Round(height, 2);
+            height = Math.Round(height * RunQTO.lengthConversionFactor, 2);
 
             return height;
         }

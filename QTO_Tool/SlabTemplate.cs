@@ -134,7 +134,7 @@ namespace QTO_Tool
                 this.topBrepFaces.Add(brep.Faces[topFaceIndex].DuplicateFace(false));
             }
 
-            return area;
+            return Math.Round(area * RunQTO.areaConversionFactor, 2);
         }
 
         double BottomArea(Brep brep, double angleThreshold)
@@ -188,7 +188,7 @@ namespace QTO_Tool
                 area = faceAreas[bottomFaceIndex];
             }
 
-            return area;
+            return Math.Round(area * RunQTO.areaConversionFactor, 2);
         }
 
         double EdgeArea(Brep brep)
@@ -203,6 +203,10 @@ namespace QTO_Tool
 
                 area += faceArea;
             }
+
+            // The raw sum is in model units; topArea/bottomArea are already
+            // converted, so convert BEFORE subtracting them.
+            area *= RunQTO.areaConversionFactor;
 
             area -= (this.topArea + this.bottomArea);
 
@@ -230,27 +234,67 @@ namespace QTO_Tool
                 projectedBreps.Add(projectedBrep);
             }
 
-            Brep joinedBrep = Brep.JoinBreps(projectedBreps, RunQTO.doc.ModelAbsoluteTolerance)[0];
+            // JoinBreps returns null when nothing could be joined - the exact
+            // family v1.02 guarded in the four linear templates but missed
+            // here; a stepped slab must not be dropped as bad geometry over
+            // its footprint. Fall back to measuring the unjoined faces.
+            Brep[] joinedBreps = Brep.JoinBreps(projectedBreps, RunQTO.doc.ModelAbsoluteTolerance);
 
-            joinedBrep.MergeCoplanarFaces(RunQTO.doc.ModelAbsoluteTolerance);
+            if (joinedBreps == null || joinedBreps.Length == 0)
+            {
+                Logger.Warn("Slab " + this.id + " on layer '" + this.layerName +
+                    "': the projected top faces could not be joined; perimeter is measured per face.");
 
+                joinedBreps = projectedBreps.ToArray();
+            }
+
+            if (joinedBreps.Length > 1)
+            {
+                Logger.Warn("Slab " + this.id + " on layer '" + this.layerName +
+                    "': the footprint joined into " + joinedBreps.Length + " separate shells; " +
+                    "perimeter and opening perimeter are summed over all of them and may " +
+                    "overcount where shells overlap in plan.");
+            }
+
+            this.perimeter = 0;
             this.openingPerimeter = 0;
 
-            foreach (BrepLoop loop in joinedBrep.Loops)
+            // Every shell and every face: the old code read Faces[0]'s outer
+            // loop only, silently losing the other fragments' boundaries and
+            // openings.
+            foreach (Brep joinedBrep in joinedBreps)
             {
-                if (loop.LoopType == BrepLoopType.Inner)
-                {
+                joinedBrep.MergeCoplanarFaces(RunQTO.doc.ModelAbsoluteTolerance);
 
-                    Curve innerLoopCurve = loop.To3dCurve();
-                    this.openingPerimeter += innerLoopCurve.GetLength();
-                }
-                else
+                // A shell that keeps multiple faces after the merge counts
+                // each internal seam edge in two faces' outer loops - the
+                // one degraded outcome the other two warnings don't cover.
+                if (joinedBrep.Faces.Count > 1)
                 {
-                    this.perimeter = Math.Round(joinedBrep.Faces[0].OuterLoop.To3dCurve().GetLength(), 2);
+                    Logger.Warn("Slab " + this.id + " on layer '" + this.layerName +
+                        "': the joined footprint kept " + joinedBrep.Faces.Count +
+                        " faces after the coplanar merge; internal seam edges are " +
+                        "counted twice, so the perimeter may overreport.");
+                }
+
+                foreach (BrepFace face in joinedBrep.Faces)
+                {
+                    foreach (BrepLoop loop in face.Loops)
+                    {
+                        if (loop.LoopType == BrepLoopType.Inner)
+                        {
+                            this.openingPerimeter += loop.To3dCurve().GetLength();
+                        }
+                        else
+                        {
+                            this.perimeter += loop.To3dCurve().GetLength();
+                        }
+                    }
                 }
             }
 
-            this.openingPerimeter = Math.Round(this.openingPerimeter, 2);
+            this.perimeter = Math.Round(this.perimeter * RunQTO.lengthConversionFactor, 2);
+            this.openingPerimeter = Math.Round(this.openingPerimeter * RunQTO.lengthConversionFactor, 2);
         }
 
         public void UpdateNetVolumeAndBottomAreaWithBeams()
@@ -259,6 +303,13 @@ namespace QTO_Tool
             {
                 Double intersectionVolume = 0;
                 Double intersectedBeamBottomArea = 0;
+
+                // The trivial-intersection gate means "at least 5 cubic feet",
+                // expressed in model units so it holds in any unit system -
+                // the old raw ">5" was 5 in^3 in an inch model (always passed)
+                // and 5 m^3 in a metric one (never passed).
+                double feetToModel = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Feet, RunQTO.doc.ModelUnitSystem);
+                double minIntersectionVolume = 5.0 * feetToModel * feetToModel * feetToModel;
 
                 foreach (var item in this.beams)
                 {
@@ -271,9 +322,15 @@ namespace QTO_Tool
                             var intersection_mass_properties = VolumeMassProperties.Compute(intersectionBrep);
                             var beam_mass_properties = VolumeMassProperties.Compute(item.Value.geometry);
 
-                            if (intersection_mass_properties != null && intersection_mass_properties.Volume > 5 && intersection_mass_properties.Volume < beam_mass_properties.Volume)
+                            if (intersection_mass_properties != null && beam_mass_properties != null &&
+                                intersection_mass_properties.Volume > minIntersectionVolume &&
+                                intersection_mass_properties.Volume < beam_mass_properties.Volume)
                             {
-                                intersectionVolume += intersection_mass_properties.Volume * 0.037037;
+                                // The deduction must use the SAME factor the
+                                // net volume was computed with; the hardcoded
+                                // 0.037037 (ft3 -> yd3) was only right in
+                                // feet models.
+                                intersectionVolume += intersection_mass_properties.Volume * RunQTO.volumeConversionFactor;
 
                                 intersectedBeamBottomArea += item.Value.bottomArea;
                             }
@@ -281,8 +338,7 @@ namespace QTO_Tool
                     }
                 }
 
-                this.netVolume -= intersectionVolume;
-                Math.Round(this.netVolume, 2);
+                this.netVolume = Math.Round(this.netVolume - intersectionVolume, 2);
 
                 this.bottomArea -= intersectedBeamBottomArea;
             }

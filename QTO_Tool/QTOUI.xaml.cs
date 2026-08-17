@@ -86,10 +86,23 @@ namespace QTO_Tool
             }
         }
 
+        // The floor table as it stood when Calculate last succeeded; null
+        // until then. Template .floor strings freeze at Calculate time, so a
+        // change to the table makes every calculated result and export stale.
+        private Dictionary<double, string> floorsAtCalculate = null;
+
         public void SetFloor_Clicked(object sender, RoutedEventArgs e)
         {
             try
             {
+                // The modeless windows survive File > Open; the dialog reads
+                // from the active document, so the save side must not target a
+                // stale static reference.
+                if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
+                {
+                    RunQTO.doc = RhinoDoc.ActiveDoc;
+                }
+
                 if (this.elevationInput != null)
                 {
                     this.elevationInput.Close();
@@ -101,6 +114,8 @@ namespace QTO_Tool
             }
             catch (Exception ex)
             {
+                Logger.Error("SET FLOOR could not open the floor dialog.", ex);
+
                 MessageBox.Show(ex.ToString());
             }
         }
@@ -108,10 +123,92 @@ namespace QTO_Tool
         // Event handler to change the color in Page1
         private void ChangeSetFloorButtonColor(object sender, EventArgs e)
         {
-            if (ElevationInput.floorElevations.Count > 0)
+            // Raised from outside Accept_Clicked's try - an exception here
+            // would escape to the WPF dispatcher with no log record.
+            try
             {
-                this.SetFloor.Background = (Brush)new System.Windows.Media.BrushConverter().ConvertFrom("#98AD80");
+                if (ElevationInput.floorElevations.Count > 0)
+                {
+                    this.SetFloor.Background = (Brush)new System.Windows.Media.BrushConverter().ConvertFrom("#98AD80");
+                }
+                else
+                {
+                    // A cleared table must not keep asserting floors are set - the
+                    // empty floor table is the field logs' most expensive failure.
+                    this.SetFloor.Background = Brushes.Firebrick;
+                }
+
+                // Calculated results carry the floor strings of the OLD table; an
+                // export now would bucket them under floors the document no longer
+                // has (the IFC routes renamed floors to "Unassigned" silently).
+                if (this.ExportExcelButton.IsEnabled || this.ExportIFC.IsEnabled)
+                {
+                    ExportsBlockedByFloorEdit();
+                }
             }
+            catch (Exception ex)
+            {
+                Logger.Error("Floor-change handler failed.", ex);
+            }
+        }
+
+        /// <summary>
+        /// The staleness gate. Also re-checked at export click time: the floor
+        /// table can change without the Accept event ever firing (the modeless
+        /// dialog reloads it from the document the moment it opens - e.g.
+        /// after File > Open), so the event-driven check alone is bypassable.
+        /// True = the table changed since Calculate; exports were disabled and
+        /// the user was told.
+        /// </summary>
+        private bool ExportsBlockedByFloorEdit()
+        {
+            if (this.floorsAtCalculate == null ||
+                FloorTablesEqual(this.floorsAtCalculate, ElevationInput.floorElevations))
+            {
+                return false;
+            }
+
+            this.ExportExcelButton.IsEnabled = false;
+            this.ExportIFC.IsEnabled = false;
+
+            Logger.Info("Floor table changed after Calculate; exports disabled until the next Calculate. " +
+                "At Calculate: " + FloorTableDescription(this.floorsAtCalculate) +
+                " | Now: " + FloorTableDescription(ElevationInput.floorElevations));
+
+            MessageBox.Show("The floor table changed after CALCULATE. The calculated results still " +
+                "use the old floors, so the exports were disabled - run CALCULATE again to refresh them.");
+
+            return true;
+        }
+
+        private static string FloorTableDescription(Dictionary<double, string> table)
+        {
+            if (table == null || table.Count == 0)
+            {
+                return "(empty)";
+            }
+
+            return String.Join(", ", table.OrderBy(kv => kv.Key).Select(kv => kv.Value + "@" + kv.Key));
+        }
+
+        private static bool FloorTablesEqual(Dictionary<double, string> a, Dictionary<double, string> b)
+        {
+            if (a.Count != b.Count)
+            {
+                return false;
+            }
+
+            foreach (KeyValuePair<double, string> kv in a)
+            {
+                string name;
+
+                if (!b.TryGetValue(kv.Key, out name) || name != kv.Value)
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         // The formwork window is its own command and window by design -
@@ -145,7 +242,7 @@ namespace QTO_Tool
             if (FormworkMethods.FormworkGeometryPresent(RunQTO.doc))
             {
                 MessageBox.Show("Formwork geometry (" + FormworkMethods.FormworkLayer +
-                    " layer) is present in this document - the checkup (and its " +
+                    " layer) is present in this model file - the checkup (and its " +
                     "preview) is disabled until it is removed.");
                 return;
             }
@@ -237,8 +334,17 @@ namespace QTO_Tool
                 int otherLost = num("before", "other") - num("after", "other");
                 int rebuilt = num("before", "instances") + num("before", "meshes");
 
-                string text = "PREVIEW - the open document was NOT touched.\n\n" +
-                    (string)report["summary"] + "\n\n" +
+                // The child's summary can carry an undo-record notice that only
+                // describes the CHILD's throwaway run - shown here it reads as
+                // if REVERT would be unavailable for the real checkup, which is
+                // false, so it is dropped from the preview.
+                string childSummary = string.Join("\n",
+                    ((string)report["summary"] ?? "")
+                        .Split('\n')
+                        .Where(line => !line.Contains("REVERT CHECKUP is unavailable")));
+
+                string text = "PREVIEW - the open model file was NOT touched.\n\n" +
+                    childSummary + "\n\n" +
                     "Running the real checkup would DELETE (never re-added):\n" +
                     "  " + curvesLost + " curve(s)" +
                     (pbCurvesLost > 0
@@ -289,7 +395,7 @@ namespace QTO_Tool
             {
                 this.StartCheckup.IsEnabled = false;
                 MessageBox.Show("Formwork geometry (" + FormworkMethods.FormworkLayer +
-                    " layer) is present in this document. Start Checkup is disabled " +
+                    " layer) is present in this model file. Start Checkup is disabled " +
                     "until it is removed - purge the formwork or work on a copy.");
                 return;
             }
@@ -810,6 +916,8 @@ namespace QTO_Tool
             Dictionary<string, List<object>> layerTemplates;
 
             int badGeometryCount = 0;
+
+            this.calculateHiddenSkipCount = 0;
 
             bool calculateSucceeded = false;
 
@@ -1503,6 +1611,28 @@ namespace QTO_Tool
                 this.ExportExcelButton.IsEnabled = true;
                 this.ExportIFC.IsEnabled = true;
 
+                // Snapshot the floor table these results were computed with, so
+                // a later floor edit can invalidate the exports. This MUST
+                // happen before any MessageBox below: the boxes pump the
+                // dispatcher and the modeless floor dialog stays clickable
+                // under them, so a floor edit accepted at that moment has to
+                // read as a change AGAINST this snapshot - not get folded into
+                // it, which would defeat the staleness check for good.
+                this.floorsAtCalculate = new Dictionary<double, string>(ElevationInput.floorElevations);
+
+                // The freshness stamp gates the formwork window: written at
+                // exactly this one site, the completed take-off, and before the
+                // message pump for the same reason as the snapshot. Never let a
+                // stamp failure break the calculation itself.
+                try
+                {
+                    FormworkMethods.WriteStamp(RunQTO.doc);
+                }
+                catch (Exception stampEx)
+                {
+                    Logger.Error("Formwork freshness stamp could not be written.", stampEx);
+                }
+
                 Dispatcher.FromThread(newWindowThread)?.InvokeShutdown();
 
                 if (badGeometryCount > 0)
@@ -1513,19 +1643,17 @@ namespace QTO_Tool
                         "They are highlighted in red and are excluded from all exports.");
                 }
 
-                calculateSucceeded = true;
+                if (this.calculateHiddenSkipCount > 0)
+                {
+                    MessageBox.Show(this.calculateHiddenSkipCount.ToString() + " hidden object(s) were excluded from " +
+                        "the take-off - the checkup never verified them. Unhide them and re-run " +
+                        "Start Checkup + Calculate if they belong in it.");
+                }
 
-                // The freshness stamp gates the formwork window: written at
-                // exactly this one site, the completed take-off. Never let a
-                // stamp failure break the calculation itself.
-                try
-                {
-                    FormworkMethods.WriteStamp(RunQTO.doc);
-                }
-                catch (Exception stampEx)
-                {
-                    Logger.Error("Formwork freshness stamp could not be written.", stampEx);
-                }
+                // Last statement of the try: a throw anywhere above (including
+                // the message-pumping boxes) must not leave this true, or the
+                // catch's error dialogs would be followed by the success one.
+                calculateSucceeded = true;
             }
 
             catch (Exception ex)
@@ -1536,6 +1664,8 @@ namespace QTO_Tool
                 // export now would silently miss part of the takeoff.
                 this.ExportExcelButton.IsEnabled = false;
                 this.ExportIFC.IsEnabled = false;
+
+                this.floorsAtCalculate = null;
 
                 Logger.Error("Calculate failed.", ex);
 
@@ -1567,8 +1697,33 @@ namespace QTO_Tool
         /// as bad geometry, logged, and painted red, so they cannot silently
         /// vanish from the exported quantities.
         /// </summary>
+        // Hidden objects skipped by the running Calculate; reported once at
+        // the end instead of per object.
+        private int calculateHiddenSkipCount = 0;
+
         private bool IsMeasurableBrep(RhinoObject rhobj, string layerName, ref int badGeometryCount)
         {
+            // FindByLayer returns hidden objects (hidden object mode or a
+            // hidden layer), but the checkup's enumerator never sees them, so
+            // they were never joined or verified. Quantifying them would
+            // silently inflate the take-off; exclude them the same way the
+            // checkup does. A hidden curve or point is skipped exactly like a
+            // visible one - only hidden TAKE-OFF geometry earns the counter
+            // and the end-of-run notice.
+            if (Methods.IsHiddenFromTakeoff(RunQTO.doc, rhobj))
+            {
+                if (rhobj.Geometry is Rhino.Geometry.Brep || rhobj.Geometry is Rhino.Geometry.Extrusion ||
+                    rhobj.Geometry is Rhino.Geometry.Mesh || rhobj is InstanceObject)
+                {
+                    this.calculateHiddenSkipCount++;
+
+                    Logger.Warn("Calculate: object " + rhobj.Id + " on layer '" + layerName +
+                        "' is hidden and was never checked; it is excluded from the take-off.");
+                }
+
+                return false;
+            }
+
             if (rhobj.Geometry is Rhino.Geometry.Brep)
             {
                 return true;
@@ -1705,6 +1860,11 @@ namespace QTO_Tool
 
         private void Export_Excel_Clicked(object sender, RoutedEventArgs e)
         {
+            if (ExportsBlockedByFloorEdit())
+            {
+                return;
+            }
+
             try
             {
                 Logger.Info("Excel export started.");
@@ -1831,6 +1991,11 @@ namespace QTO_Tool
 
         private void Export_IFC_Clicked(object sender, RoutedEventArgs e)
         {
+            if (ExportsBlockedByFloorEdit())
+            {
+                return;
+            }
+
             try
             {
                 System.Windows.Forms.SaveFileDialog saveFileDialog = new System.Windows.Forms.SaveFileDialog();
@@ -1841,6 +2006,8 @@ namespace QTO_Tool
                     string outputPath = saveFileDialog.FileName;
 
                     Logger.Info("IFC export started: " + outputPath);
+
+                    IFCMethods.SkippedMeshElements.Clear();
 
                     // The IfcProject carries the document file name only; the full path
                     // would leak the local folder structure into shared files.
@@ -1884,10 +2051,25 @@ namespace QTO_Tool
 
                     project.SaveAs(outputPath);
 
-                    Logger.Info("IFC export finished: " + outputPath);
+                    Logger.Info("IFC export finished: " + outputPath +
+                        (IFCMethods.SkippedMeshElements.Count > 0
+                            ? " (" + IFCMethods.SkippedMeshElements.Count + " elements skipped, could not be meshed)"
+                            : ""));
 
-                    MessageBox.Show("Export was successful.");
-
+                    if (IFCMethods.SkippedMeshElements.Count > 0)
+                    {
+                        MessageBox.Show("Export finished, but " + IFCMethods.SkippedMeshElements.Count +
+                            " element(s) could not be meshed and are NOT in the IFC file:" +
+                            Environment.NewLine + Environment.NewLine +
+                            String.Join(Environment.NewLine, IFCMethods.SkippedMeshElements.Take(10)) +
+                            (IFCMethods.SkippedMeshElements.Count > 10
+                                ? Environment.NewLine + "... (see log for the full list)"
+                                : ""));
+                    }
+                    else
+                    {
+                        MessageBox.Show("Export was successful.");
+                    }
                 }
 
                 else

@@ -2,6 +2,46 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Development status — 2026-08-17 (keep this section current when work lands)
+
+Active branch: **`fix/audit-batch-1`** → **PR #17** (open, targets master).
+It carries two bodies of work, both agent-reviewed and green-built:
+
+1. **The 2026-08-15 audit remediation — all 17 confirmed bugs fixed** across
+   three batches (stair face classification, inch-model area/length
+   conversion, slab-beam deduction units, hidden-object exclusion, IFC
+   per-element mesh guard, floor-staleness export gates, derived-model
+   sidecar fencing, `split_pourbreaks` headless guard, driver coding lines,
+   logging coverage, "model file" wording). Field-verified 2026-08-17 on a
+   793-solid model. Two documentation issues: #15 (Excel text-sum),
+   #16 (slab-beam feet assumption). 16 lower-priority *unverified* audit
+   findings remain as a batch-3 candidate list (see the session memory's
+   audit note, or re-derive from the audit titles in issue history).
+2. **Break-sheet pour-break authoring P1** (`breaksheet_gen.py` /
+   `breaksheet_import.py` / FormworkUI MAKE-OPEN-IMPORT): draw pour breaks
+   on a generated plan sheet with TYP typical-floor cells instead of the
+   `_POURBREAK` layer ceremony. Contract: `Formwork_Generation/CLAUDE.md`,
+   "Break sheet". 30-assert headless test ALL PASS in real Rhino 8.
+
+**Pending before merge:** a manual Rhino pass over the formwork/break-sheet
+flows (MAKE → draw → IMPORT → SPLIT on the real model); re-run
+`test_pourbreaks_model.py` (golden) and `test_sideforms_headless.py` (its
+scene changed with the instance-layer fix) via the dev loop.
+
+**Agreed next phases (not started):** break-sheet P2 = near-TYP merge UI,
+auto-import-on-Split + dirty badge, advisory pour areas/grid offsets in the
+import summary; P3 = read-only conduit rendering of the breaks JSON in the
+live model, named Option-1/2 sheets. Grid-line furniture is deferred: the
+user's grids come from imported PDF/DWG files with arbitrary layer names;
+the osnap-able slab outlines are the drawing reference for now.
+
+Build with the machine-local SDK when no system one exists:
+`%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe build QTO_Tool\QTO_Tool.csproj -c Release`.
+Headless test loop: stage `Formwork_Generation/rhino/*.py` into
+`%LOCALAPPDATA%\qto_fw_test`, then
+`Rhino.exe /nosplash /notemplate /runscript="-_RunPythonScript <staged test>"`
+with `FW_HEADLESS=1`; reports land next to the staged scripts.
+
 ## What this is
 
 A Windows-only Rhino 7 plugin (`QTO_Tool`) for concrete quantity takeoff: it validates solid geometry in a Rhino model, computes per-element quantities (volumes, face areas, lengths) from Breps, groups elements by floor, and exports to Excel and IFC. The solution also contains `Turner_Seattle_VDC_Server`, an unrelated standalone WPF app (SDK-style, net472) that reads QTO Excel output into MySQL — it does not reference the plugin project.
@@ -29,9 +69,9 @@ Everything flows through one WPF window driven by button clicks, with static glo
 
 **User workflow / pipeline** (handlers in `QTOUI.xaml.cs`, ~1200 lines):
 1. *Set Floor* → `ElevationInput` window. Floor data lives in `ElevationInput.floorElevations`, a **public static** `Dictionary<double, string>` (elevation Z in model units → floor name), persisted as JSON in the Rhino document user strings under key `"FloorElevations"` (`Methods.SaveDictionaryToDocumentStrings` / `RetrieveDictionaryFromDocumentStrings`). A **Scan Model** button (2026-08-13) proposes the floor table from the model itself — solids' bottom elevations, gap-clustered at 1 m, cluster max = top of slab = floor elevation; the field logs' most expensive failure was this dialog left empty, with the whole take-off landing in the `"-"` bucket.
-2. *Start Checkup* → `Methods.ConcreteModelSetup()`. **Destructive**: it deletes every object in the document and re-adds joined/merged solids, coloring bad geometry red. A **Preview Checkup** button (2026-08-13) runs the REAL checkup on a staged `WriteFile` copy in a second headless Rhino (`QTOCheckupReport`, a worker command that refuses to run without its env var — typed interactively it would shred the live doc) and reports the deletion list — curves (`_POURBREAK` flagged: harvest first), text dots, non-solids; block instances/meshes counted as take-off geometry, not deletions — without touching the open document; the preview can never drift from the checkup because it IS the checkup, one process boundary away. Objects whose original can't be deleted (locked objects, locked layers — the default `ObjectTable` enumerator includes them) are **skipped and left untouched**, with the freshly added copies rolled back; the skip count is reported in the checkup summary. One failing object logs an error and is skipped rather than aborting the run. Then `UIMethods.GenerateLayerTemplate` builds a per-layer template picker (`Methods.AutomaticTemplateSelect` guesses the element type from the layer name's first `_`-segment; a layer name containing "continuous" forces Continuous Footing).
-3. *Calculate* → for each Rhino object, constructs one template object per its layer's assigned type, passing `ElevationInput.floorElevations` into the constructor.
-4. Exports: Excel (ClosedXML), IFC, plus *Blockify* (`Methods.Blockify` wraps every object into a one-object block instance).
+2. *Start Checkup* → `Methods.ConcreteModelSetup()`. **Destructive**: it deletes every object in the document and re-adds joined/merged solids, coloring bad geometry red. A **Preview Checkup** button (2026-08-13) runs the REAL checkup on a staged `WriteFile` copy in a second headless Rhino (`QTOCheckupReport`, a worker command that refuses to run without its env var — typed interactively it would shred the live doc) and reports the deletion list — curves (`_POURBREAK` flagged: harvest first), text dots, non-solids; block instances/meshes counted as take-off geometry, not deletions — without touching the open document; the preview can never drift from the checkup because it IS the checkup, one process boundary away. Objects whose original can't be deleted (locked objects, locked layers — the default `ObjectTable` enumerator includes them) are **skipped and left untouched**, with the freshly added copies rolled back; the skip count is reported in the checkup summary. **Hidden take-off geometry** (hidden object mode or hidden layers — the default enumerator excludes both) is never checked; since 2026-08-15 the checkup counts and reports it, and Calculate excludes it via `Methods.IsHiddenFromTakeoff` so unverified hidden solids cannot inflate the export. One failing object logs an error and is skipped rather than aborting the run. Then `UIMethods.GenerateLayerTemplate` builds a per-layer template picker (`Methods.AutomaticTemplateSelect` guesses the element type from the layer name's first `_`-segment; a layer name containing "continuous" forces Continuous Footing).
+3. *Calculate* → for each Rhino object, constructs one template object per its layer's assigned type, passing `ElevationInput.floorElevations` into the constructor. The success path snapshots the floor table (`floorsAtCalculate`); editing floors afterwards disables both exports until the next Calculate — the template `.floor` strings froze at Calculate time, and an IFC export against a renamed floor would silently land on "Unassigned".
+4. Exports: Excel (ClosedXML), IFC, plus *Blockify* (`Methods.Blockify` wraps every object into a one-object block instance). One unmeshable Brep no longer aborts the IFC export: the element is skipped, logged with its id, and reported in the completion dialog (`IFCMethods.SkippedMeshElements`).
 
 **Template pattern** — the core domain model. Nine element types: Wall, Beam, Column, Footing, ContinuousFooting, Curb, Slab, Styrofoam, Stair. Each `XTemplate.cs` class computes all its quantities in the constructor by classifying Brep faces via their normals (up/down/side against an angle threshold from the UI slider) — e.g. `WallTemplate` derives gross/net volume, top/end/side areas, and length. Each template stores `.floor` (a string) via `Methods.FindFloor`, which nearest-neighbor matches the element's bottom-face elevation against `floorElevations`; `"-"` when no floors are defined. Templates are bucketed into `AllX` containers (all trivial subclasses of `AllTemplates`), whose `allTemplates` is a `Dictionary<string, List<object>>` **keyed by floor name**. Values are `object` and every consumer type-switches with `GetType() == typeof(...)` — extending an element type means touching the template class, `QTOUI.xaml.cs`, `UIMethods.cs`, `ExcelMethods.cs`, and `IFCMethods.cs`.
 
@@ -63,7 +103,12 @@ new tab in `QTOUI`.** The `RunFormwork` command opens `FormworkUI`
 (`RunFormwork.cs`, `FormworkUI.xaml(.cs)`, `FormworkMethods.cs`); `QTOUI.xaml`
 gained exactly one launcher button. Harvest/restore of pour breaks run in-process
 on the live document (harvest is read-only; restore confirms because adding
-objects kills REVERT). Split and Generate always run in a **second, headless
+objects kills REVERT). Pour-break authoring's primary surface is the **BREAK
+SHEET** (2026-08-17): MAKE/OPEN/IMPORT buttons generate and re-import a
+plan-cell sheet file via in-process `File3dm` — no child Rhino, the live
+model never gains an object; identical floors collapse into TYP cells with
+explicit fan-out at import. Contract details:
+`Formwork_Generation/CLAUDE.md`, "Break sheet". Split and Generate always run in a **second, headless
 Rhino process on a `RhinoDoc.WriteFile` copy** of the model, launched with a
 watchdog timeout (a hidden dialog — e.g. the second-seat licence check — would
 otherwise hang invisibly), never in the Rhino process that owns the user's
@@ -94,7 +139,14 @@ authoring breaks after Calculate stays green) plus the floor dictionary, and
 gates FormworkUI's Split/Generate buttons red/amber/green. The **floor count is
 validated separately** — a model where floors were never set fingerprints as a
 perfect match while the whole take-off is bucketed under `"-"`, so a green light
-there would be actively misleading.
+there would be actively misleading. The stamp only vouches for the LIVE
+document; the staged **pour-break derived model** (fixed machine-wide filename)
+carries its own sidecar `model_pourbreaks.meta.json` (fingerprint + floors +
+breaks-JSON SHA + doc path, captured at Split launch, deleted at Split launch
+and re-issued only when the child verifiably rewrote the file) — Generate on
+the derived model and the input radio both check it via
+`FormworkMethods.DerivedModelMatches`, so a stale or foreign-project derived
+model fails loudly instead of generating under a green light.
 
 `_FORMWORK`-layer objects must never be present during a checkup: the checkup deletes
 and re-adds every object in the document.
@@ -128,6 +180,6 @@ rejected as off-brand:
 ## Conventions and gotchas
 
 - Layer names are `_`-separated; `nameAbb` shown everywhere is the first two segments. Quantities are rounded to 2 decimals at computation time, inside template constructors.
-- Volume units: hardcoded conversion to cubic yards for ft/in models (`Methods.SetVolumeConversionFactor`); other model units pass through unconverted.
+- Units: volumes convert to cubic yards for ft/in models (`Methods.SetVolumeConversionFactor`); areas and lengths convert to ft²/ft for inch models (`SetAreaConversionFactor`/`SetLengthConversionFactor`, applied inside the template constructors); other model units pass through unconverted in all three.
 - Comparing floats: `FindFloor` has no tolerance/tie-breaking; duplicate floor elevations silently collapse in the dictionary (elevation is the key), and duplicate floor *names* are allowed.
 - `RunQTO.doc` can go stale if the user switches documents; some paths re-fetch `RhinoDoc.ActiveDoc`, others don't.

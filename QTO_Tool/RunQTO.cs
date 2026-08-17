@@ -19,7 +19,16 @@ namespace QTO_Tool
         QTOUI UI;
 
         public static RhinoDoc doc;
-        public static double volumeConversionFactor;
+        public static double volumeConversionFactor = 1;
+
+        // Areas and lengths follow the same reporting convention the volume
+        // does (the ft-based units the takeoff reports in): inch models
+        // convert in^2 -> ft^2 and in -> ft, feet models are already there,
+        // any other unit system passes through unconverted. Before these
+        // factors existed, inch models exported square-inch areas and inch
+        // lengths next to cubic-yard volumes with no warning.
+        public static double areaConversionFactor = 1;
+        public static double lengthConversionFactor = 1;
 
         public RunQTO()
         {
@@ -53,7 +62,10 @@ namespace QTO_Tool
             Logger.StartSession();
             Logger.Info("Document: " + RunQTO.doc.Path + " | Units: " + RunQTO.doc.GetUnitSystemName(true, true, true, true));
 
-            RunQTO.volumeConversionFactor = Methods.SetVolumeConversionFactor(RunQTO.doc.GetUnitSystemName(true, true, true, true));
+            string modelUnit = RunQTO.doc.GetUnitSystemName(true, true, true, true);
+            RunQTO.volumeConversionFactor = Methods.SetVolumeConversionFactor(modelUnit);
+            RunQTO.areaConversionFactor = Methods.SetAreaConversionFactor(modelUnit);
+            RunQTO.lengthConversionFactor = Methods.SetLengthConversionFactor(modelUnit);
 
             //try closing a window if it's already up
             try

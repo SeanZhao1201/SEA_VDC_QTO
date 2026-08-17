@@ -134,6 +134,46 @@ namespace QTO_Tool
                 Logger.Info("Checkup: excluded " + ghostObjCount + " deleted-but-unpurged objects from the snapshot.");
             }
 
+            // The snapshot's default enumerator never yields hidden objects
+            // (hidden object mode or a hidden layer), so they are left
+            // untouched and never verified - and Calculate excludes them for
+            // the same reason. Count them so the summary says so instead of
+            // reporting a clean model while hidden solids sit unchecked.
+            int hiddenObjCount = 0;
+            HashSet<Guid> snapshotIds = new HashSet<Guid>(docObjects.Select(o => o.Id));
+            ObjectEnumeratorSettings includeHidden = new ObjectEnumeratorSettings
+            {
+                NormalObjects = true,
+                LockedObjects = true,
+                HiddenObjects = true,
+            };
+
+            foreach (RhinoObject candidate in RunQTO.doc.Objects.GetObjectList(includeHidden))
+            {
+                if (candidate.IsDeleted || snapshotIds.Contains(candidate.Id))
+                {
+                    continue;
+                }
+
+                // Hidden curves/points/annotations would be ignored as
+                // non-takeoff geometry even if visible; counting them would
+                // demand a pointless unhide-and-re-run for objects that never
+                // carry quantities.
+                string candidateTypeName = candidate.GetType().Name;
+
+                if (candidateTypeName != "BrepObject" && candidateTypeName != "ExtrusionObject" &&
+                    candidateTypeName != "MeshObject" && candidateTypeName != "InstanceObject")
+                {
+                    continue;
+                }
+
+                hiddenObjCount++;
+
+                Logger.Info("Checkup: object " + candidate.Id + " on layer '" +
+                    Methods.LayerPathOf(candidate.Attributes) +
+                    "' is hidden; it was not checked and is excluded from the take-off.");
+            }
+
             Logger.Info("Checkup: processing " + docObjects.Count + " objects (" +
                 docObjects.Count(o => o is InstanceObject) + " block instances). Absolute tolerance: " +
                 RunQTO.doc.ModelAbsoluteTolerance + ", angle tolerance: " +
@@ -376,6 +416,13 @@ namespace QTO_Tool
                 examinationResult += "\n" + lockedObjCount.ToString() + " locked objects were left as-is.";
             }
 
+            if (hiddenObjCount > 0)
+            {
+                examinationResult += "\n" + hiddenObjCount.ToString() +
+                    " hidden objects were NOT checked and are excluded from the take-off;" +
+                    " unhide them and re-run the checkup if they belong in it.";
+            }
+
             if (skippedObjCount > 0)
             {
                 examinationResult += "\n" + skippedObjCount.ToString() +
@@ -389,8 +436,8 @@ namespace QTO_Tool
 
             Logger.Info("Checkup summary: " + solidObjCount + " solids, " + invalidObjCount + " invalid, " +
                 badGeometryCount + " bad, " + ignoredObjCount + " ignored (non-takeoff), " + lockedObjCount +
-                " locked, " + skippedObjCount + " skipped, " + joinedBreps.Count + " joined breps, of " +
-                docObjects.Count + " objects.");
+                " locked, " + hiddenObjCount + " hidden (unchecked), " + skippedObjCount + " skipped, " +
+                joinedBreps.Count + " joined breps, of " + docObjects.Count + " objects.");
 
             RunQTO.doc.Views.Redraw();
 
@@ -882,6 +929,45 @@ namespace QTO_Tool
             return new Dictionary<double, string>();
         }
 
+        /// <summary>
+        /// True when the object is invisible - hidden object mode, or any
+        /// layer in its ancestry turned off. These objects never go through
+        /// the checkup (the default enumerator skips them), so the take-off
+        /// must exclude them everywhere with the same test.
+        /// </summary>
+        public static bool IsHiddenFromTakeoff(RhinoDoc doc, RhinoObject obj)
+        {
+            if (obj == null || obj.Attributes == null)
+            {
+                return false;
+            }
+
+            if (!obj.Attributes.Visible)
+            {
+                return true;
+            }
+
+            Layer layer = doc.Layers[obj.Attributes.LayerIndex];
+            int guard = 0;
+
+            while (layer != null && guard++ < 64)
+            {
+                if (!layer.IsVisible)
+                {
+                    return true;
+                }
+
+                if (layer.ParentLayerId == Guid.Empty)
+                {
+                    break;
+                }
+
+                layer = doc.Layers.FindId(layer.ParentLayerId);
+            }
+
+            return false;
+        }
+
         public static double SetVolumeConversionFactor(string modelUnit)
         {
             double result;
@@ -901,6 +987,21 @@ namespace QTO_Tool
             }
 
             return result;
+        }
+
+        // Areas and lengths report in the ft-based units the takeoff has
+        // always used for feet models: inch models convert (in^2 -> ft^2,
+        // in -> ft), feet models are already there, and any other unit
+        // system passes through unconverted - the same convention the
+        // volume factor above follows.
+        public static double SetAreaConversionFactor(string modelUnit)
+        {
+            return modelUnit == "in" ? 1.0 / 144.0 : 1;
+        }
+
+        public static double SetLengthConversionFactor(string modelUnit)
+        {
+            return modelUnit == "in" ? 1.0 / 12.0 : 1;
         }
 
         public static void Blockify()

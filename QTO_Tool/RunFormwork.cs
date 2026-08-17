@@ -43,6 +43,20 @@ namespace QTO_Tool
             }
             catch { }
 
+            // FormworkUI_Closing CANCELS the close while a child run is busy
+            // and the user chooses to keep it - Close() returns void, so the
+            // cancellation is invisible here. A second window would share the
+            // fixed-name staging files with the first and, with its own fresh
+            // runBusy state, could clobber the running child's inputs before
+            // the plugin-wide gate refuses the launch. Front the surviving
+            // window instead of opening a twin.
+            if (this.UI != null && this.UI.IsLoaded)
+            {
+                this.UI.Activate();
+
+                return Result.Success;
+            }
+
             this.UI = new FormworkUI();
 
             Methods.SetChildStatus(this.UI, ChildStatus.ChildOfRhino);

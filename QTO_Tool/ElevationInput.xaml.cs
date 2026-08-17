@@ -29,8 +29,16 @@ namespace QTO_Tool
             InitializeComponent();
         }
 
+        // The document this dialog was opened against. The dialog is modeless
+        // and survives File > Open; accepting it then would transplant the
+        // previous project's floor table into the new document.
+        private uint loadedDocSerial = 0;
+
         private void Window_Loaded(object sender, RoutedEventArgs e)
         {
+            Rhino.RhinoDoc activeDoc = Rhino.RhinoDoc.ActiveDoc;
+            this.loadedDocSerial = activeDoc == null ? 0 : activeDoc.RuntimeSerialNumber;
+
             ElevationInput.floorElevations = Methods.RetrieveDictionaryFromDocumentStrings();
 
             if (ElevationInput.floorElevations.Count > 0)
@@ -154,7 +162,10 @@ namespace QTO_Tool
 
         private void Accept_Clicked(object sender, RoutedEventArgs e)
         {
-            ElevationInput.floorElevations.Clear();
+            // Parsed into a local first: the static table (which Calculate,
+            // the exports and the staleness check all read) must only change
+            // once the save into the document has actually succeeded.
+            Dictionary<double, string> edited = new Dictionary<double, string>();
 
             foreach (Grid wrapper in this.ElevationInputWrapper.Children)
             {
@@ -166,16 +177,85 @@ namespace QTO_Tool
                     try
                     {
                         double elevation = Convert.ToDouble(elevationText);
-                        ElevationInput.floorElevations[elevation] = floor;
+
+                        // The dictionary indexer silently overwrites on a
+                        // duplicate key, and the old catch message promised a
+                        // "repetitive" warning that could never fire (only
+                        // Convert.ToDouble throws here). First row wins;
+                        // the collision is reported instead of a floor
+                        // silently vanishing.
+                        if (edited.ContainsKey(elevation))
+                        {
+                            Logger.Warn("Floor row rejected: '" + floor + "' reuses elevation " +
+                                elevation + ", already taken by '" + edited[elevation] + "'.");
+
+                            MessageBox.Show(floor + " was not added because elevation " + elevationText +
+                                " is already used by " + edited[elevation] + ". Give each floor its own elevation.");
+
+                            continue;
+                        }
+
+                        edited[elevation] = floor;
                     }
                     catch
                     {
-                        MessageBox.Show(floor + " was not added to the program because the input elevation is not a number, or the elevation is repetitive.");
+                        // A silently missing row shifts every nearest-neighbor
+                        // floor bucket, so the rejection must survive in the
+                        // session log, not just this dismissable box.
+                        Logger.Warn("Floor row rejected: name '" + floor + "', elevation text '" +
+                            elevationText + "' is not a number.");
+
+                        MessageBox.Show(floor + " was not added to the program because the input elevation is not a number.");
                     }
                 }
             }
 
-            Methods.SaveDictionaryToDocumentStrings(ElevationInput.floorElevations);
+            try
+            {
+                // This modeless dialog survives File > Open, and the save goes
+                // through the static RunQTO.doc while the dialog read from the
+                // active document - re-fetch so both sides target the same,
+                // live document instead of a disposed one.
+                if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
+                {
+                    RunQTO.doc = Rhino.RhinoDoc.ActiveDoc;
+                }
+
+                // But never accept into a DIFFERENT document than the one this
+                // dialog was opened against - that would transplant the old
+                // project's floor table into the new model.
+                if (RunQTO.doc == null || RunQTO.doc.RuntimeSerialNumber != this.loadedDocSerial)
+                {
+                    // Without this line the field symptom is indistinguishable
+                    // from "the user never set floors".
+                    Logger.Warn("Floor save refused: the dialog was opened against document serial " +
+                        this.loadedDocSerial + " but the current document is " +
+                        (RunQTO.doc == null ? "<none>" : RunQTO.doc.RuntimeSerialNumber + " (" + (RunQTO.doc.Path ?? "<unsaved>") + ")") +
+                        "; nothing was saved.");
+
+                    MessageBox.Show("The open model file changed since this dialog was opened - " +
+                        "nothing was saved. Use SET FLOOR again for the current model file.");
+                    this.Close();
+                    return;
+                }
+
+                Methods.SaveDictionaryToDocumentStrings(edited);
+            }
+            catch (Exception ex)
+            {
+                // Closing here would silently claim success while nothing was
+                // persisted; keep the dialog open instead. The static table is
+                // untouched, so calculated results and exports stay valid.
+                // This is the field logs' most expensive failure domain (floor
+                // problems bucket the whole take-off under "-"), so the full
+                // exception goes to the session file, not just the box.
+                Logger.Error("The floor table could not be saved into the model file.", ex);
+
+                MessageBox.Show("The floor table could not be saved into the model file: " + ex.Message);
+                return;
+            }
+
+            ElevationInput.floorElevations = edited;
 
             // Raise the custom event when the button is clicked
             ChangeSetFloorButtonColorRequest?.Invoke(this, EventArgs.Empty);

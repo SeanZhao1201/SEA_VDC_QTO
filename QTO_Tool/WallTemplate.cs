@@ -97,9 +97,9 @@ namespace QTO_Tool
 
             Dictionary<string, double> topAndBottomArea = this.TopAndBottomArea(this.geometry, angleThreshold);
 
-            this.topArea = Math.Round(topAndBottomArea["Top Area"], 2);
+            this.topArea = Math.Round(topAndBottomArea["Top Area"] * RunQTO.areaConversionFactor, 2);
 
-            this.bottomArea = Math.Round(topAndBottomArea["Bottom Area"], 2);
+            this.bottomArea = Math.Round(topAndBottomArea["Bottom Area"] * RunQTO.areaConversionFactor, 2);
 
             // The angle threshold can classify every face away from the
             // down-facing bucket; without a bottom face there is no elevation
@@ -719,7 +719,7 @@ namespace QTO_Tool
                 // length instead of failing the whole object.
                 if (joinedIntersectionCurves != null && joinedIntersectionCurves.Length > 0)
                 {
-                    this.length += Math.Round(joinedIntersectionCurves[0].GetLength(), 2);
+                    this.length += Math.Round(joinedIntersectionCurves[0].GetLength() * RunQTO.lengthConversionFactor, 2);
                     lengthMeasured = true;
                 }
             }
@@ -769,7 +769,7 @@ namespace QTO_Tool
             }
 
             //Total End Area
-            this.endArea = Math.Round(this.endFaceAreas.Sum(), 2);
+            this.endArea = Math.Round(this.endFaceAreas.Sum() * RunQTO.areaConversionFactor, 2);
 
             joinedSideFaces = Brep.JoinBreps(this.sideFaces, RunQTO.doc.ModelAbsoluteTolerance);
 
@@ -787,16 +787,16 @@ namespace QTO_Tool
 
             if (joinedSideFaces.Length > 0)
             {
-                this.sideArea_1 = Math.Round(joinedSideFaces[0].GetArea(), 2);
+                this.sideArea_1 = Math.Round(joinedSideFaces[0].GetArea() * RunQTO.areaConversionFactor, 2);
 
-                noHoleSideArea_1 = Math.Round(joinedSideFaces[0].RemoveHoles(RunQTO.doc.ModelAbsoluteTolerance).GetArea(), 2);
+                noHoleSideArea_1 = Math.Round(joinedSideFaces[0].RemoveHoles(RunQTO.doc.ModelAbsoluteTolerance).GetArea() * RunQTO.areaConversionFactor, 2);
             }
 
             if (joinedSideFaces.Length > 1)
             {
-                this.sideArea_2 = Math.Round(joinedSideFaces[1].GetArea(), 2);
+                this.sideArea_2 = Math.Round(joinedSideFaces[1].GetArea() * RunQTO.areaConversionFactor, 2);
 
-                noHoleSideArea_2 = Math.Round(joinedSideFaces[1].RemoveHoles(RunQTO.doc.ModelAbsoluteTolerance).GetArea(), 2);
+                noHoleSideArea_2 = Math.Round(joinedSideFaces[1].RemoveHoles(RunQTO.doc.ModelAbsoluteTolerance).GetArea() * RunQTO.areaConversionFactor, 2);
             }
 
             this.openingArea = Math.Round(((noHoleSideArea_1 + noHoleSideArea_2) - (this.sideArea_1 + this.sideArea_2)) / 2, 2);

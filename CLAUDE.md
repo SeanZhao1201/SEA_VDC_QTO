@@ -63,7 +63,12 @@ new tab in `QTOUI`.** The `RunFormwork` command opens `FormworkUI`
 (`RunFormwork.cs`, `FormworkUI.xaml(.cs)`, `FormworkMethods.cs`); `QTOUI.xaml`
 gained exactly one launcher button. Harvest/restore of pour breaks run in-process
 on the live document (harvest is read-only; restore confirms because adding
-objects kills REVERT). Split and Generate always run in a **second, headless
+objects kills REVERT). Pour-break authoring's primary surface is the **BREAK
+SHEET** (2026-08-17): MAKE/OPEN/IMPORT buttons generate and re-import a
+plan-cell sheet file via in-process `File3dm` — no child Rhino, the live
+model never gains an object; identical floors collapse into TYP cells with
+explicit fan-out at import. Contract details:
+`Formwork_Generation/CLAUDE.md`, "Break sheet". Split and Generate always run in a **second, headless
 Rhino process on a `RhinoDoc.WriteFile` copy** of the model, launched with a
 watchdog timeout (a hidden dialog — e.g. the second-seat licence check — would
 otherwise hang invisibly), never in the Rhino process that owns the user's

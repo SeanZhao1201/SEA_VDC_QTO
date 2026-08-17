@@ -24,6 +24,8 @@ namespace QTO_Tool
         static readonly string Stage = FormworkMethods.StagingDir;
         static readonly string BreaksJson = Path.Combine(Stage, "pour_breaks_model.json");
         static readonly string DerivedModel = Path.Combine(Stage, "model_pourbreaks.3dm");
+        static readonly string SheetFile = Path.Combine(Stage, "breaksheet.3dm");
+        static readonly string SheetMeta = Path.Combine(Stage, "breaksheet.meta.json");
 
         const int ChildTimeoutMs = 15 * 60 * 1000;
 
@@ -190,6 +192,9 @@ namespace QTO_Tool
             this.HarvestButton.IsEnabled = !busy;
             this.RestoreButton.IsEnabled = !busy;
             this.RecheckButton.IsEnabled = !busy;
+            this.MakeSheetButton.IsEnabled = !busy;
+            this.OpenSheetButton.IsEnabled = !busy;
+            this.ImportSheetButton.IsEnabled = !busy;
             this.CancelRunButton.IsEnabled = busy;
             if (busy)
             {
@@ -229,6 +234,202 @@ namespace QTO_Tool
                 return false;
             }
             return true;
+        }
+
+        /// <summary>MAKE BREAK SHEET: lay every floor group out as a plan
+        /// cell in a separate 3dm. Runs IN-PROCESS via File3dm (read-only on
+        /// the open model file, writes only staging files) - no child Rhino,
+        /// no REVERT impact.</summary>
+        private void MakeSheet_Clicked(object sender, RoutedEventArgs e)
+        {
+            if (File.Exists(SheetFile))
+            {
+                MessageBoxResult confirm = MessageBox.Show(
+                    "A break sheet already exists (" +
+                    File.GetLastWriteTime(SheetFile).ToString("yyyy-MM-dd HH:mm") +
+                    "). Regenerating OVERWRITES it - anything drawn there and " +
+                    "not yet imported is lost. (Existing breaks from the " +
+                    "current JSON are drawn back in.) Continue?",
+                    "Regenerate break sheet", MessageBoxButton.OKCancel);
+                if (confirm != MessageBoxResult.OK)
+                {
+                    return;
+                }
+            }
+            if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
+            {
+                RunQTO.doc = RhinoDoc.ActiveDoc;
+            }
+            // A stale sheet from a refused run must not read as success:
+            // clear the error file, note the pre-run write time, and judge
+            // the run by what actually changed.
+            string errorFile = Path.Combine(Stage, "breaksheet_error.txt");
+            try { if (File.Exists(errorFile)) { File.Delete(errorFile); } } catch { }
+            DateTime? sheetBefore = File.Exists(SheetFile)
+                ? File.GetLastWriteTimeUtc(SheetFile) : (DateTime?)null;
+
+            string script = Path.Combine(Stage, "bs_gui_make.py");
+            RhinoApp.RunScript("_-RunPythonScript " + script, false);
+            AppendLog("--- make break sheet ---");
+            AppendLog(FormworkMethods.ReadLogTail("breaksheet_log.txt", 40));
+
+            if (File.Exists(errorFile))
+            {
+                Logger.Error("Break-sheet generation failed - " + errorFile, null);
+                AppendLog("MAKE FAILED - see " + errorFile);
+            }
+            else if (!File.Exists(SheetFile) ||
+                (sheetBefore != null &&
+                 File.GetLastWriteTimeUtc(SheetFile) == sheetBefore.Value))
+            {
+                AppendLog("MAKE did not (re)write the sheet - see the log above.");
+            }
+            else
+            {
+                AppendLog("Sheet: " + SheetFile + " - OPEN SHEET, draw, save, " +
+                    "then IMPORT SHEET.");
+            }
+        }
+
+        private void OpenSheet_Clicked(object sender, RoutedEventArgs e)
+        {
+            if (!File.Exists(SheetFile))
+            {
+                MessageBox.Show("No break sheet yet - run MAKE BREAK SHEET first.");
+                return;
+            }
+            // Opens in a separate Rhino instance (Windows file association) -
+            // deliberately NOT in this one: opening a document here would
+            // close the model file this window is working against.
+            Process.Start(SheetFile);
+            AppendLog("Sheet opened in a separate Rhino. Draw, SAVE there, " +
+                "then IMPORT SHEET here.");
+        }
+
+        /// <summary>IMPORT SHEET: read the drawn sheet via File3dm and write
+        /// the breaks JSON. Loud refusals live in the Python side; the
+        /// dialogs here gate the two-truths cases.</summary>
+        private void ImportSheet_Clicked(object sender, RoutedEventArgs e)
+        {
+            if (!File.Exists(SheetFile))
+            {
+                MessageBox.Show("No break sheet found - run MAKE BREAK SHEET first.");
+                return;
+            }
+            if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
+            {
+                RunQTO.doc = RhinoDoc.ActiveDoc;
+            }
+            // Two-truths gate 1: live _POURBREAK curves exist. The import
+            // overwrites the JSON from the sheet; the layer curves stay in
+            // the model but are no longer what Split will cut by.
+            if (PourBreakCurvesPresent())
+            {
+                MessageBoxResult confirm = MessageBox.Show(
+                    "This model file also has curves on the _POURBREAK layer. " +
+                    "Importing the sheet REPLACES the breaks JSON - the layer " +
+                    "curves stay in the model but will NOT be part of the next " +
+                    "Split unless you re-run HARVEST instead. Import the sheet?",
+                    "Layer breaks also present", MessageBoxButton.OKCancel);
+                if (confirm != MessageBoxResult.OK)
+                {
+                    return;
+                }
+            }
+            // Two-truths gate 2: an existing JSON from another surface.
+            if (File.Exists(BreaksJson))
+            {
+                // an unreadable/unknown source is MORE reason to confirm, not
+                // less - only a sheet-produced JSON skips the dialog
+                string kind = ReadBreaksSourceKind();
+                if (kind != "sheet")
+                {
+                    MessageBoxResult confirm = MessageBox.Show(
+                        "The current breaks JSON came from '" +
+                        (kind == "" ? "unknown" : kind) + "' (" +
+                        File.GetLastWriteTime(BreaksJson).ToString("yyyy-MM-dd HH:mm") +
+                        "). Importing the sheet OVERWRITES it (floors without " +
+                        "a sheet cell are preserved). Continue?",
+                        "Overwrite breaks JSON", MessageBoxButton.OKCancel);
+                    if (confirm != MessageBoxResult.OK)
+                    {
+                        return;
+                    }
+                }
+            }
+            // Judge the run by what changed, never by the previous run's log.
+            string errorFile = Path.Combine(Stage, "breaksheet_import_error.txt");
+            try { if (File.Exists(errorFile)) { File.Delete(errorFile); } } catch { }
+            DateTime? jsonBefore = File.Exists(BreaksJson)
+                ? File.GetLastWriteTimeUtc(BreaksJson) : (DateTime?)null;
+
+            string script = Path.Combine(Stage, "bs_gui_import.py");
+            RhinoApp.RunScript("_-RunPythonScript " + script, false);
+            AppendLog("--- import break sheet ---");
+            AppendLog(FormworkMethods.ReadLogTail("breaksheet_import_log.txt", 40));
+
+            if (File.Exists(errorFile))
+            {
+                Logger.Error("Break-sheet import failed - " + errorFile, null);
+                AppendLog("IMPORT FAILED - see " + errorFile);
+            }
+            else if (!File.Exists(BreaksJson) ||
+                (jsonBefore != null &&
+                 File.GetLastWriteTimeUtc(BreaksJson) == jsonBefore.Value))
+            {
+                AppendLog("IMPORT wrote nothing - the refusal reasons are in " +
+                    "the log above; the previous breaks JSON is unchanged.");
+            }
+            // a changed breaks JSON makes any derived model stale - reflect it
+            RefreshDerivedAvailability();
+        }
+
+        /// <summary>Read-only probe for _POURBREAK curves in the open model
+        /// file (default enumerator is fine here - a hidden authored curve
+        /// still gets flagged by the harvest side).</summary>
+        private bool PourBreakCurvesPresent()
+        {
+            try
+            {
+                // hidden breaks count too - the harvest includes them, so the
+                // two-truths dialog must not be skippable by Ctrl+H
+                Rhino.DocObjects.ObjectEnumeratorSettings es =
+                    new Rhino.DocObjects.ObjectEnumeratorSettings
+                    {
+                        NormalObjects = true,
+                        LockedObjects = true,
+                        HiddenObjects = true,
+                    };
+                foreach (Rhino.DocObjects.RhinoObject obj in RunQTO.doc.Objects.GetObjectList(es))
+                {
+                    if (obj == null || obj.Attributes == null) { continue; }
+                    Rhino.DocObjects.Layer layer = RunQTO.doc.Layers[obj.Attributes.LayerIndex];
+                    string path = layer == null ? "" : (layer.FullPath ?? "");
+                    if (path.StartsWith(FormworkMethods.PourBreakLayer,
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("_POURBREAK presence probe failed.", ex);
+            }
+            return false;
+        }
+
+        private string ReadBreaksSourceKind()
+        {
+            try
+            {
+                JObject data = JObject.Parse(File.ReadAllText(BreaksJson));
+                return (string)data.SelectToken("source.kind") ?? "";
+            }
+            catch
+            {
+                return "";
+            }
         }
 
         private void Harvest_Clicked(object sender, RoutedEventArgs e)

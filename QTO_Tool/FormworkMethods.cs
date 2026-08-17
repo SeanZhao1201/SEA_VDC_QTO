@@ -92,6 +92,8 @@ namespace QTO_Tool
             "split_pourbreaks.py",
             "run_on_model.py",
             "run_sideforms_on_model.py",
+            "breaksheet_gen.py",
+            "breaksheet_import.py",
         };
 
         /// <summary>Extract the embedded Python engines into the staging
@@ -122,6 +124,12 @@ namespace QTO_Tool
             string breaksJson = Path.Combine(StagingDir, BreaksJsonFile);
             WriteDriver("pb_gui_harvest.py", "pourbreak_harvest", breaksJson);
             WriteDriver("pb_gui_restore.py", "pourbreak_restore", breaksJson);
+            // The break-sheet pair runs in-process too (File3dm file I/O
+            // only - no child Rhino, no window flash, live model untouched);
+            // BS_SHEET/BS_META default to the fixed staging names inside the
+            // modules themselves.
+            WriteDriver("bs_gui_make.py", "breaksheet_gen", breaksJson);
+            WriteDriver("bs_gui_import.py", "breaksheet_import", breaksJson);
         }
 
         static void WriteDriver(string fileName, string module, string breaksJson)

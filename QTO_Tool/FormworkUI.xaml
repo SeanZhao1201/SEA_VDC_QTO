@@ -44,11 +44,28 @@
                     </StackPanel>
                 </GroupBox>
 
-                <GroupBox Header="Pour breaks" Margin="10 0 10 10" Padding="12"
+                <GroupBox Header="Break sheet" Margin="10 0 10 10" Padding="12"
                           BorderThickness="3" BorderBrush="Gray" FontSize="18">
                     <StackPanel Orientation="Vertical">
                         <TextBlock FontSize="14" TextWrapping="Wrap" Margin="0 0 0 8"
-                                   Text="Draw break curves on the _POURBREAK layer (sublayer per floor optional) with a numbered text dot in each pour region. Harvest is read-only; Restore re-draws harvested breaks after a checkup wiped them."/>
+                                   Text="MAKE lays every floor out as a plan cell in a separate sheet file (identical floors share one TYP cell); draw break curves and numbered pour dots on it with normal Rhino tools, save, then IMPORT. The open model file is never touched."/>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <Button Name="MakeSheetButton" Content="MAKE BREAK SHEET" Width="200" Height="52"
+                                    FontSize="16" Margin="5" Background="#52a0d1"
+                                    Click="MakeSheet_Clicked"/>
+                            <Button Name="OpenSheetButton" Content="OPEN SHEET" Width="200" Height="52"
+                                    FontSize="16" Margin="5" Click="OpenSheet_Clicked"/>
+                            <Button Name="ImportSheetButton" Content="IMPORT SHEET" Width="200" Height="52"
+                                    FontSize="16" Margin="5" Click="ImportSheet_Clicked"/>
+                        </StackPanel>
+                    </StackPanel>
+                </GroupBox>
+
+                <GroupBox Header="Pour breaks (layer back door)" Margin="10 0 10 10" Padding="12"
+                          BorderThickness="3" BorderBrush="Gray" FontSize="18">
+                    <StackPanel Orientation="Vertical">
+                        <TextBlock FontSize="14" TextWrapping="Wrap" Margin="0 0 0 8"
+                                   Text="Power-user path: draw break curves on the _POURBREAK layer (sublayer per floor optional) with a numbered text dot in each pour region. Harvest is read-only; Restore re-draws harvested breaks after a checkup wiped them."/>
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                             <Button Name="HarvestButton" Content="HARVEST" Width="200" Height="52"
                                     FontSize="20" Margin="5" Click="Harvest_Clicked"/>

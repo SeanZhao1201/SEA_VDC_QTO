@@ -4,8 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development status — 2026-08-17 (keep this section current when work lands)
 
-Active branch: **`fix/audit-batch-1`** → **PR #17** (open, targets master).
-It carries two bodies of work, both agent-reviewed and green-built:
+**PR #17 MERGED to master** (`3ddcfe8`, 2026-08-17); work continues on
+master. It landed two bodies of work, both agent-reviewed and green-built:
 
 1. **The 2026-08-15 audit remediation — all 17 confirmed bugs fixed** across
    three batches (stair face classification, inch-model area/length
@@ -23,10 +23,12 @@ It carries two bodies of work, both agent-reviewed and green-built:
    `_POURBREAK` layer ceremony. Contract: `Formwork_Generation/CLAUDE.md`,
    "Break sheet". 30-assert headless test ALL PASS in real Rhino 8.
 
-**Pending before merge:** a manual Rhino pass over the formwork/break-sheet
-flows (MAKE → draw → IMPORT → SPLIT on the real model); re-run
-`test_pourbreaks_model.py` (golden) and `test_sideforms_headless.py` (its
-scene changed with the instance-layer fix) via the dev loop.
+**Post-merge verification, 2026-08-17:** `test_pourbreaks_model.py`
+(golden) and `test_sideforms_headless.py` both re-run in real Rhino 8 —
+**ALL PASS**. Still pending, user-only: the manual Rhino pass over the
+formwork/break-sheet flows (MAKE → draw → IMPORT → SPLIT on the real
+model) and the 30-second floor-staleness retest (edit a floor after
+Calculate, confirm exports disable).
 
 **Agreed next phases (not started):** break-sheet P2 = near-TYP merge UI,
 auto-import-on-Split + dirty badge, advisory pour areas/grid offsets in the
@@ -40,7 +42,14 @@ Build with the machine-local SDK when no system one exists:
 Headless test loop: stage `Formwork_Generation/rhino/*.py` into
 `%LOCALAPPDATA%\qto_fw_test`, then
 `Rhino.exe /nosplash /notemplate /runscript="-_RunPythonScript <staged test>"`
-with `FW_HEADLESS=1`; reports land next to the staged scripts.
+with `FW_HEADLESS=1`; reports land next to the staged scripts. Two
+hard-won launch facts: the quote must open **after** `=`
+(`/runscript="-_Run…"`) — a fully-quoted argument token (what bash/MSYS
+produces) makes Rhino open and idle forever, so launch via PowerShell
+`Start-Process -ArgumentList` with the exact string above; and the golden
+test consumes the staged `pour_breaks_model.json`, which
+`test_breaksheet_headless.py` overwrites with its synthetic scene — restage
+`Formwork_Generation/out/pour_breaks_model.json` before a golden run.
 
 ## What this is
 

@@ -5,7 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Development status — 2026-08-19 (keep this section current when work lands)
 
 **Audit batch-3 COMPLETE on branch `fix/audit-batch-3`** (2026-08-19,
-stacked on `feat/breaksheet-p2`, local, not pushed). The 16 unverified
+stacked on `feat/breaksheet-p2`; **PR #18**, open, carries BOTH bodies
+of work below plus this file's status commits - one big PR by the
+user's choice, same pattern as #17). The 16 unverified
 2026-08-15 audit findings were adversarially verified (10-agent
 workflow): **10 confirmed and fixed, 6 refuted** (VolumeMassProperties
 guards — per-object catch already contains it; SET FLOOR red — fixed in
@@ -27,8 +29,8 @@ follow-up defects, all folded in. Verified in real Rhino 8: formwork,
 sideforms, pourbreaks, golden Bellwether, breaksheet — **ALL PASS**;
 builds 0/0.
 
-**Break-sheet P2 COMPLETE on branch `feat/breaksheet-p2`** (2026-08-19,
-local, not pushed): near-TYP merge UI (`SheetMergeUI` dialog after MAKE →
+**Break-sheet P2 COMPLETE** (2026-08-19, in PR #18 via the stacked
+branch): near-TYP merge UI (`SheetMergeUI` dialog after MAKE →
 `breaksheet_merge.json` directives, union-fingerprint validation in file
 order — one metric with the suggestions), dirty badge + auto-import-on-
 Split (`FormworkMethods.SheetDirty`, docPath-guarded, only a sheet-kind

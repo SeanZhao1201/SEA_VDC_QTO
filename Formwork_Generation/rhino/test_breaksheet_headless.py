@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Headless acceptance test for the BREAK SHEET pipeline (P1).
+"""Headless acceptance test for the BREAK SHEET pipeline (P1 + P2).
 
 Builds a synthetic METRIC scene, then exercises:
 
-    MAKE (breaksheet_gen)  ->  cells + TYP grouping asserts
-    ->  IMPORT (breaksheet_import)  ->  fixed point vs the seeded JSON
+    MAKE (breaksheet_gen)  ->  cells + TYP grouping + near-TYP asserts
+    ->  IMPORT (breaksheet_import)  ->  fixed point vs the seeded JSON,
+        target_area/grid preservation, ADVISORY areas + grid offsets
     ->  user-edit simulation (File3dm append into a cell)  ->  fan-out
     ->  straddling curve  ->  loud total refusal, JSON untouched
+    ->  merge directives (P2)  ->  invalid directive tolerated, valid
+        merge collapses cells, import fans out to every merged member
 
 Scene (metres):
   Slab_A  x[0,10] y[0,10] z 3.0->3.2   floor L01 } identical footprints
@@ -127,17 +130,33 @@ SEED_L99 = {"breaks": [{"id": "L99-PB1",
             "pour_markers": [], "target_area": None}
 
 
+SEED_GRID_X = {"A": 0.0, "B": 5.0}
+
+# non-empty fake path on every directive this test writes: leaked onto a
+# SAVED model it is refused by the docPath guard, while the untitled
+# headless doc (doc.Path == "") still applies it (guard needs both sides)
+TEST_DOCPATH = "HEADLESS-BS-TEST.3dm"
+
+
 def seed_json(doc):
     data = {
         "version": 2,
         "units": str(doc.ModelUnitSystem),
         "source": {"kind": "sheet", "model": "", "sheet": ""},
+        # target_area + grid cannot be expressed on the sheet: the P1 bug
+        # was that a reimport silently wiped both (P2 preserves them and
+        # feeds the ADVISORY block from them). L03's entry has a target
+        # but NO breaks - its covered cell will hold no ink, the case
+        # where P1's preservation dropped the whole entry.
         "floors": {"L01": {"breaks": [SEED_BREAK, SEED_CURVE_BREAK],
                            "pour_markers": [SEED_MARKER],
-                           "target_area": None},
+                           "target_area": 50.0},
+                   "L03": {"breaks": [], "pour_markers": [],
+                           "target_area": 75.0},
                    "L04": {"breaks": [SEED_L04_BREAK],
                            "pour_markers": [], "target_area": None},
                    "L99": SEED_L99},
+        "grid_x": SEED_GRID_X,
     }
     with io.open(PB_JSON, "w", encoding="utf-8") as fh:
         fh.write(u"{0}".format(json.dumps(data, indent=1, sort_keys=True)))
@@ -179,6 +198,10 @@ def main():
     doc.Strings.SetString("FloorElevations", json.dumps(
         {"3.2": "L01", "6.2": "L02", "9.2": "L03", "12.2": "L04"}))
     seed_json(doc)
+    # the staging folder is machine-wide: a merge directive left behind by
+    # an earlier run would regroup the FIRST make and break every count
+    if os.path.exists(bsg.MERGE_FILE):
+        os.remove(bsg.MERGE_FILE)
 
     # ---- MAKE ----
     meta = bsg.main()
@@ -199,6 +222,16 @@ def main():
           typ["floors"].get("L01") == 3.2 and typ["floors"].get("L02") == 6.2)
     check("solo cell = L03", solo is not None)
     check("HIDDEN slab still got its cell", l04 is not None)
+
+    # P2: near-TYP suggestions land in the meta; nothing auto-merges
+    pair_names = set()
+    for p in meta.get("near_typ") or []:
+        pair_names.add((p["a"], p["b"]))
+        pair_names.add((p["b"], p["a"]))
+    check("near-TYP L01-group vs L03 suggested",
+          ("L01", "L03") in pair_names, str(sorted(pair_names)))
+    check("no merges applied yet", meta.get("merged") == [],
+          str(meta.get("merged")))
 
     f3 = Rhino.FileIO.File3dm.Read(bsg.SHEET_FILE)
     check("sheet readable", f3 is not None)
@@ -241,6 +274,37 @@ def main():
               got["id"] == "L02-PB1")
     check("markers fanned", len(fl.get("L01", {}).get("pour_markers", [])) == 1
           and len(fl.get("L02", {}).get("pour_markers", [])) == 1)
+
+    # P2: authored data the sheet cannot express survives the reimport
+    # (P1 wiped both target_area and the grid on every import)
+    check("target_area preserved",
+          fl.get("L01", {}).get("target_area") == 50.0,
+          str(fl.get("L01", {}).get("target_area")))
+    check("ink-less covered cell keeps target_area (P1 dropped the entry)",
+          fl.get("L03", {}).get("target_area") == 75.0 and
+          fl.get("L03", {}).get("breaks") == [],
+          str(fl.get("L03")))
+    check("grid preserved", pb.get("grid_x") == SEED_GRID_X,
+          str(pb.get("grid_x")))
+    # P2 advisory block in the import log: 10x10 slab cut at x=2 and x=5,
+    # marker (1,5) claims the 20 m2 region; the rest is unmarked. FULL
+    # lines - the L04 cell coincidentally also logs "2 region(s) ... 80.0
+    # m2" (10+70), so a bare tail would not pin the [L01, L02] accounting.
+    ilog = io.open(bsi.LOG_FILE, encoding="utf-8").read()
+    check("advisory pour areas + unmarked accounting logged",
+          "ADVISORY pour areas [L01, L02]: pour 1 ~ 20.0 m2 (20%); "
+          "2 region(s) without a marker (~ 80.0 m2)" in ilog)
+    check("advisory target ratio logged",
+          "ADVISORY vs target_area 50.0 (L01): pour 1 = 40%" in ilog)
+    # full lines again: offset value, PB-id numbering and the nearest-grid
+    # pick (A for x=2, B for x=5) - this fixed point is what keeps the
+    # _grid_offsets replica in step with split_pourbreaks.grid_offsets
+    check("advisory grid offset (break 1 nearest A, offset 2.0)",
+          "ADVISORY grid [L01, L02] break 1 seg 0: 2.0 off grid 'A' "
+          "(x-axis)" in ilog)
+    check("advisory grid offset (break 2 nearest B discriminated)",
+          "ADVISORY grid [L01, L02] break 2 seg 0: 0.0 off grid 'B' "
+          "(x-axis)" in ilog)
 
     # ---- user-edit simulation: draw a new break in the L03 cell ----
     dx, dy = solo["offset"]
@@ -291,6 +355,101 @@ def main():
     after = io.open(PB_JSON, encoding="utf-8").read()
     check("JSON untouched on refusal", before == after)
 
+    # ---- P2 merge directives: MAKE regenerates, so the straddler above
+    # is wiped along with the rest of the drawn state ----
+    # a malformed file (valid JSON, wrong shape) degrades to a warning
+    with io.open(bsg.MERGE_FILE, "w", encoding="utf-8") as fh:
+        fh.write(u"[]")
+    meta = bsg.main()
+    check("malformed merge file tolerated", meta is not None and
+          len(meta["cells"]) == 3,
+          "cells={0}".format(None if meta is None else len(meta["cells"])))
+
+    # an unknown floor name in a directive is ignored loudly, never fatal
+    with io.open(bsg.MERGE_FILE, "w", encoding="utf-8") as fh:
+        fh.write(u"{0}".format(json.dumps(
+            {"docPath": TEST_DOCPATH, "merge": [["L01", "NOPE"]]})))
+    meta = bsg.main()
+    check("invalid merge directive tolerated", meta is not None and
+          len(meta["cells"]) == 3,
+          "cells={0}".format(None if meta is None else len(meta["cells"])))
+
+    # valid directive: the L01+L02 TYP group and L03 collapse into one cell
+    with io.open(bsg.MERGE_FILE, "w", encoding="utf-8") as fh:
+        fh.write(u"{0}".format(json.dumps(
+            {"docPath": TEST_DOCPATH, "merge": [["L01", "L03"]]})))
+    meta = bsg.main()
+    check("merge applied: 2 cells", meta is not None and
+          len(meta["cells"]) == 2,
+          "cells={0}".format(None if meta is None else len(meta["cells"])))
+    if meta is None:
+        return
+    mcell = next((c for c in meta["cells"] if len(c["floors"]) == 3), None)
+    check("merged cell = L01+L02+L03", mcell is not None and
+          sorted(mcell["floors"].keys()) == ["L01", "L02", "L03"])
+    check("merge recorded in meta (z order)",
+          meta.get("merged") == [["L01", "L02", "L03"]],
+          str(meta.get("merged")))
+
+    # import the merged, untouched sheet: the representative's ink fans
+    # out to EVERY member - L03's diverging break set is REPLACED
+    data = bsi.main()
+    check("merged-sheet import succeeded", data is not None)
+    if data is not None:
+        pb = load_pb()
+        fl = pb["floors"]
+        check("fan-out reaches merged L03 (2 breaks at its own z)",
+              len(fl.get("L03", {}).get("breaks", [])) == 2 and
+              all(b["z"] == 9.2 for b in fl["L03"]["breaks"]),
+              str(fl.get("L03"))[:120])
+        check("merged L03 keeps its target_area",
+              fl.get("L03", {}).get("target_area") == 75.0)
+        check("L04 untouched by the merge",
+              len(fl.get("L04", {}).get("breaks", [])) == 1)
+        check("preserved floor survives the merged import",
+              fl.get("L99") == SEED_L99)
+        check("target_area survives the merged import",
+              fl.get("L01", {}).get("target_area") == 50.0)
+        check("grid survives the merged import",
+              pb.get("grid_x") == SEED_GRID_X)
+
+    # chained directives sharing a member union transitively - the only
+    # behavior union-find adds over per-set merging, so pin it: each
+    # union step validates against the ACCUMULATED fingerprint
+    with io.open(bsg.MERGE_FILE, "w", encoding="utf-8") as fh:
+        fh.write(u"{0}".format(json.dumps(
+            {"docPath": TEST_DOCPATH,
+             "merge": [["L01", "L03"], ["L03", "L04"]]})))
+    meta = bsg.main()
+    check("chained directives union transitively (1 cell)",
+          meta is not None and len(meta["cells"]) == 1 and
+          sorted(meta["cells"][0]["floors"].keys()) ==
+          ["L01", "L02", "L03", "L04"],
+          str(None if meta is None else
+              [sorted(c["floors"].keys()) for c in meta["cells"]]))
+    check("chained merge recorded", meta is not None and
+          meta.get("merged") == [["L01", "L02", "L03", "L04"]],
+          str(None if meta is None else meta.get("merged")))
+
+    # the MERGE REFUSED branch and the 15% threshold arm are structurally
+    # unreachable with 4-vertex rectangles (max diff 8 == the hard floor),
+    # so pin them with synthetic fingerprints: disjoint 64-vertex sets ->
+    # diff 128 > max(8, int(0.15 * 128)) = 19
+    refuse_lines = []
+    ga = {"members": [{"name": "LA", "z": 1.0}],
+          "fp": frozenset((i, 0) for i in range(64)), "merged": False}
+    gb = {"members": [{"name": "LB", "z": 2.0}],
+          "fp": frozenset((i, 1) for i in range(64)), "merged": False}
+    kept = bsg.apply_merges([ga, gb], [["LA", "LB"]], refuse_lines.append)
+    check("beyond-threshold merge REFUSED", len(kept) == 2 and
+          not ga["merged"] and not gb["merged"] and
+          any("MERGE REFUSED" in l for l in refuse_lines),
+          "; ".join(refuse_lines)[:120])
+    ok, diff, union = bsg._near_typ(ga["fp"], gb["fp"])
+    check("threshold arm exercised (128 of 128)",
+          not ok and diff == 128 and union == 128,
+          "{0}/{1}".format(diff, union))
+
 
 if __name__ == "__main__":
     try:
@@ -299,6 +458,13 @@ if __name__ == "__main__":
         import traceback
         failures.append("unhandled exception")
         lines.append(traceback.format_exc())
+    # the staging folder is machine-wide: never leave a directive behind,
+    # even on a crashed run - a leaked merge file would regroup future
+    # MAKEs (and TEST_DOCPATH only protects SAVED models)
+    try:
+        os.remove(bsg.MERGE_FILE)
+    except OSError:
+        pass
     lines.append("")
     lines.append("RESULT: {0}".format(
         "ALL PASS" if not failures else "{0} FAILURE(S): {1}".format(

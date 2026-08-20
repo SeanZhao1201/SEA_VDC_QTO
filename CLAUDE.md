@@ -2,10 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Development status — 2026-08-17 (keep this section current when work lands)
+## Development status — 2026-08-19 (keep this section current when work lands)
 
-**PR #17 MERGED to master** (`3ddcfe8`, 2026-08-17); work continues on
-master. It landed two bodies of work, both agent-reviewed and green-built:
+**Break-sheet P2 COMPLETE on branch `feat/breaksheet-p2`** (2026-08-19,
+local, not pushed): near-TYP merge UI (`SheetMergeUI` dialog after MAKE →
+`breaksheet_merge.json` directives, union-fingerprint validation in file
+order — one metric with the suggestions), dirty badge + auto-import-on-
+Split (`FormworkMethods.SheetDirty`, docPath-guarded, only a sheet-kind
+JSON clears it; Split offers Yes/No/Cancel), and the import-summary
+ADVISORY (per-pour areas + nearest-grid offsets) with the P1 preservation
+fix (`target_area`/`grid_x`/`grid_y` survive reimports, foreign-JSON
+laundering guard, ink-less covered cells keep their target). Hardened by
+a 19-agent adversarial review — 14 confirmed defects, all fixed; headless
+test grew 30 → 53 asserts, **ALL PASS in real Rhino 8**; C# builds 0/0.
+Contract details: `Formwork_Generation/CLAUDE.md`, "Break sheet P2".
+Still user-only: the manual Rhino pass over the P2 flows (MAKE → merge
+dialog → draw → badge → Split auto-import).
+
+**PR #17 MERGED to master** (`3ddcfe8`, 2026-08-17). It landed two bodies
+of work, both agent-reviewed and green-built:
 
 1. **The 2026-08-15 audit remediation — all 17 confirmed bugs fixed** across
    three batches (stair face classification, inch-model area/length
@@ -30,12 +45,14 @@ formwork/break-sheet flows (MAKE → draw → IMPORT → SPLIT on the real
 model) and the 30-second floor-staleness retest (edit a floor after
 Calculate, confirm exports disable).
 
-**Agreed next phases (not started):** break-sheet P2 = near-TYP merge UI,
-auto-import-on-Split + dirty badge, advisory pour areas/grid offsets in the
-import summary; P3 = read-only conduit rendering of the breaks JSON in the
-live model, named Option-1/2 sheets. Grid-line furniture is deferred: the
+**Agreed next phases:** break-sheet P2 — DONE (see above). P3 (not
+started) = read-only conduit rendering of the breaks JSON in the live
+model, named Option-1/2 sheets. Also queued: the 16 unverified audit
+findings as batch-3 candidates. Grid-line furniture is deferred: the
 user's grids come from imported PDF/DWG files with arbitrary layer names;
-the osnap-able slab outlines are the drawing reference for now.
+the osnap-able slab outlines are the drawing reference for now (the
+import ADVISORY reads the optional `grid_x`/`grid_y` from the breaks
+JSON when present).
 
 Build with the machine-local SDK when no system one exists:
 `%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe build QTO_Tool\QTO_Tool.csproj -c Release`.

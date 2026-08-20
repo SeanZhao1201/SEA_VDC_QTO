@@ -295,6 +295,113 @@ namespace QTO_Tool
         // green freshness stamp.
         public const string DerivedModelMetaFile = "model_pourbreaks.meta.json";
         public const string BreaksJsonFile = "pour_breaks_model.json";
+        public const string SheetFileName = "breaksheet.3dm";
+        public const string SheetMetaFileName = "breaksheet.meta.json";
+        public const string SheetMergeFile = "breaksheet_merge.json";
+
+        /// <summary>Persist the TYP MERGE dialog's picks for breaksheet_gen.
+        /// The docPath lets the generator refuse a directive file another
+        /// project left behind in the machine-wide staging folder.</summary>
+        public static void WriteSheetMergeFile(RhinoDoc doc, List<List<string>> sets)
+        {
+            Dictionary<string, object> payload = new Dictionary<string, object>
+            {
+                { "docPath", doc.Path ?? "" },
+                { "merge", sets ?? new List<List<string>>() },
+            };
+            File.WriteAllText(Path.Combine(StagingDir, SheetMergeFile),
+                JsonConvert.SerializeObject(payload));
+        }
+
+        /// <summary>The sheet meta's docPath, "" when absent or unreadable.
+        /// The machine-wide staging folder means the sheet on disk may be
+        /// another project's - every consumer must check.</summary>
+        public static string SheetMetaDocPath()
+        {
+            try
+            {
+                string meta = Path.Combine(StagingDir, SheetMetaFileName);
+                if (!File.Exists(meta))
+                {
+                    return "";
+                }
+                Newtonsoft.Json.Linq.JObject data =
+                    Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(meta));
+                return (string)data.SelectToken("docPath") ?? "";
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Sheet meta docPath probe failed.", ex);
+                return "";
+            }
+        }
+
+        static string BreaksJsonSourceKind()
+        {
+            try
+            {
+                string json = Path.Combine(StagingDir, BreaksJsonFile);
+                Newtonsoft.Json.Linq.JObject data =
+                    Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(json));
+                return (string)data.SelectToken("source.kind") ?? "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        /// <summary>True when the drawn sheet on disk is AHEAD of the breaks
+        /// JSON: saved after MAKE wrote it (the generator writes the meta
+        /// sidecar right after the sheet, so a later sheet write can only be
+        /// a user save) and not imported since. Only a SHEET-produced JSON
+        /// counts as "imported since" - a harvest rewrite is newer but does
+        /// not carry the sheet's ink, so the badge must stay on. A sheet
+        /// generated from a DIFFERENT model file is never dirty for THIS
+        /// one. Advisory - the import's own gates stay the authority; a
+        /// probe failure reads as clean.</summary>
+        public static bool SheetDirty(RhinoDoc doc, out string reason)
+        {
+            reason = "";
+            try
+            {
+                string sheet = Path.Combine(StagingDir, SheetFileName);
+                string meta = Path.Combine(StagingDir, SheetMetaFileName);
+                if (!File.Exists(sheet) || !File.Exists(meta))
+                {
+                    return false;
+                }
+                string sheetDoc = SheetMetaDocPath();
+                string docPath = (doc == null ? "" : doc.Path) ?? "";
+                if (sheetDoc.Length > 0 && docPath.Length > 0 &&
+                    !string.Equals(sheetDoc, docPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+                DateTime sheetWrite = File.GetLastWriteTimeUtc(sheet);
+                if (sheetWrite <= File.GetLastWriteTimeUtc(meta))
+                {
+                    return false;
+                }
+                string json = Path.Combine(StagingDir, BreaksJsonFile);
+                if (File.Exists(json) && File.GetLastWriteTimeUtc(json) >= sheetWrite &&
+                    BreaksJsonSourceKind() == "sheet")
+                {
+                    return false;
+                }
+                reason = "The break sheet was saved " +
+                    File.GetLastWriteTime(sheet).ToString("yyyy-MM-dd HH:mm") +
+                    " but not imported since - its latest changes are not in " +
+                    "the breaks JSON.";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Sheet-dirty probe failed.", ex);
+                reason = "";
+                return false;
+            }
+        }
 
         /// <summary>Fingerprint + floors + path of the document RIGHT NOW -
         /// captured at Split launch time (the moment the staged copy is

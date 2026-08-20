@@ -389,6 +389,53 @@ sidecar `breaksheet.meta.json` carries the cell map + source doc path and
 is required for import. The C# handlers judge each run by what changed on
 disk (error file + mtime), never by the previous run's log.
 
+**Break sheet P2 (2026-08-19) — same contract, three additions, all
+pinned by the headless test (now 53 asserts, ALL PASS in real Rhino 8)
+and hardened by a 19-agent adversarial review (14 confirmed defects, all
+fixed pre-merge):**
+
+- *Near-TYP merge*: the generator writes `near_typ` suggestions and the
+  applied `merged` sets into the sheet meta; after a successful MAKE,
+  FormworkUI offers both in the `SheetMergeUI` checkbox dialog (applied
+  merges pre-checked — unchecking separates the cells again). Picks land
+  in `breaksheet_merge.json` (`{docPath, merge: [[floors…]]}`, docPath-
+  AND shape-guarded — malformed or foreign files degrade to a warning,
+  never a crashed MAKE) and trigger ONE regeneration, never a re-offer.
+  Directives apply IN FILE ORDER, each validated against the cells'
+  CURRENT (union) fingerprints with the same near-TYP rule the
+  suggestions use — one metric on both sides, so every offered merge is
+  honorable and a stale directive whose floors genuinely diverged fails
+  with a loud `MERGE REFUSED`. The dialog writes applied merges before
+  new picks; the incremental validation depends on that order.
+- *Dirty badge + auto-import on Split*: `FormworkMethods.SheetDirty`
+  drives an orange dot on IMPORT SHEET, refreshed on window activation
+  (the sheet is saved in a second Rhino). Dirty means: sheet saved after
+  MAKE wrote the meta sidecar AND not imported since — where only a
+  `source.kind == "sheet"` breaks JSON counts as "imported since" (a
+  harvest rewrite is newer but lacks the sheet's ink, so the badge stays
+  on), and a sheet whose meta docPath names another model is never dirty
+  here. Split offers Yes(import, then split)/No(split with the current
+  JSON)/Cancel and aborts when the pre-split import refuses. Advisory
+  only — the import's own gates stay the authority. `ImportSheetCore`
+  also gained the foreign-sheet confirm dialog the Python-side warning
+  had always deferred to.
+- *Import advisory + preservation*: the import PRESERVES per-floor
+  `target_area` and top-level `grid_x`/`grid_y` (P1 wiped them on every
+  reimport; a covered cell with no ink now clears breaks/markers but
+  keeps the target on an otherwise-empty entry), and refuses to preserve
+  anything from a previous JSON whose `source.model` names another model
+  file — the same laundering guard as the generator's carried-in breaks.
+  After success the log carries an ADVISORY block: per-pour soffit areas
+  (furniture outlines split by the drawn ink extended by the splitter's
+  first 5 m rung, pours assigned by marker containment, inch models
+  reported in sf per the QTO convention, "did not sever" judged against
+  the pre-split face count) with per-floor target ratios, plus
+  nearest-grid offsets per axis-parallel segment numbered by PB id (a
+  deliberate replica of `split_pourbreaks.grid_offsets` — importing the
+  splitter module would run its top level in the host Rhino; the
+  headless test's full-line fixed points keep the two in step). Advisory
+  failures log one line and never block or alter what is written.
+
 Longer-term in-model rendering: a **read-only display conduit** of the
 current JSON remains the P3 target (no editor debt); the original
 GetPoint-authoring idea is superseded by the sheet. The layer path below

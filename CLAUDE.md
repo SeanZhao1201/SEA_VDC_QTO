@@ -5,7 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Development status — 2026-08-19 (keep this section current when work lands)
 
 **Break-sheet P3 COMPLETE on branch `feat/breaksheet-p3`** (2026-08-19,
-local, not pushed): read-only overlay (`PourBreakOverlay`, a
+**PR #19**, open; pre-merge manual checklist in the PR body — overlay
+pass, File>Open kill-switch, SAVE/LOAD round trip, plus the carried-over
+#18 items): read-only overlay (`PourBreakOverlay`, a
 DisplayConduit singleton — active breaks JSON drawn into the live
 viewports, zero objects added, CloseDocument hook + whole-parse guard +
 docPath refusal with a LOAD-OPTION-confirmed override), named break

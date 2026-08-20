@@ -134,8 +134,10 @@ namespace QTO_Tool
                     curves += 1;
                     Layer layer = doc.Layers[obj.Attributes.LayerIndex];
                     string path = layer == null ? "" : (layer.FullPath ?? "");
-                    if (path.StartsWith(FormworkMethods.PourBreakLayer,
-                        StringComparison.OrdinalIgnoreCase))
+                    // strict tree matcher: the preview must not promise that
+                    // HARVEST will save curves (e.g. on "_POURBREAK_OLD")
+                    // that the strict Python walker never visits
+                    if (FormworkMethods.LayerInTree(path, FormworkMethods.PourBreakLayer))
                     {
                         pourbreakCurves += 1;
                     }

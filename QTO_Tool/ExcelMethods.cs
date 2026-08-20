@@ -117,6 +117,11 @@ namespace QTO_Tool
                 for (int i = 0; i < contentGrid.ColumnDefinitions.Count - 1; i++)
                 {
                     double numberValue = 0;
+                    // a measured ZERO (wall with no openings) must export as
+                    // 0, not as the "-" no-data marker - SUMMARY's SUMIF over
+                    // the same rows already shows 0.00, and the two sheets
+                    // must not disagree about whether a value exists
+                    bool numberSeen = false;
                     string textValue = string.Empty;
                     bool isTextColumn = false;
 
@@ -163,6 +168,7 @@ namespace QTO_Tool
                         if (i == 0)
                         {
                             numberValue += 1;
+                            numberSeen = true;
                             continue;
                         }
 
@@ -182,6 +188,7 @@ namespace QTO_Tool
                         try
                         {
                             numberValue += Convert.ToDouble(value);
+                            numberSeen = true;
                         }
                         catch
                         {
@@ -198,7 +205,7 @@ namespace QTO_Tool
                     {
                         row[projectColumnIndex] = textValue;
                     }
-                    else if (numberValue > 0)
+                    else if (numberSeen)
                     {
                         row[projectColumnIndex] = numberValue;
                     }

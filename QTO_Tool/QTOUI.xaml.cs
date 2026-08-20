@@ -945,6 +945,11 @@ namespace QTO_Tool
 
             Logger.Info("Calculate started. Angle threshold: " + angleThreshold + " | Floors defined: " + ElevationInput.floorElevations.Count);
 
+            // Layers that hold take-off geometry but have no template row:
+            // they were added after Start Checkup built the picker, and the
+            // loop below would drop them from the take-off without a word.
+            List<string> layersAddedAfterCheckup = new List<string>();
+
             try
             {
                 for (int i = 0; i < RunQTO.doc.Layers.Count; i++)
@@ -958,7 +963,41 @@ namespace QTO_Tool
                         // grouping layers) take no part in the calculation.
                         if (selectedConcreteTemplate == null)
                         {
-                            Logger.Info("Calculate: skipping layer without a template row: " + RunQTO.doc.Layers[i].FullPath);
+                            // A row exists only for layers that held take-off
+                            // geometry at CHECKUP time - same geometry test as
+                            // UIMethods.GenerateLayerTemplate, so an empty
+                            // grouping layer still skips quietly.
+                            int lateObjectCount = 0;
+                            Rhino.DocObjects.RhinoObject[] lateObjects =
+                                RunQTO.doc.Objects.FindByLayer(RunQTO.doc.Layers[i]);
+                            if (lateObjects != null)
+                            {
+                                foreach (Rhino.DocObjects.RhinoObject lateObject in lateObjects)
+                                {
+                                    if (lateObject.Geometry is Rhino.Geometry.Brep ||
+                                        lateObject.Geometry is Rhino.Geometry.Extrusion ||
+                                        lateObject.Geometry is Rhino.Geometry.Mesh ||
+                                        lateObject is Rhino.DocObjects.InstanceObject)
+                                    {
+                                        lateObjectCount++;
+                                    }
+                                }
+                            }
+
+                            if (lateObjectCount > 0)
+                            {
+                                layersAddedAfterCheckup.Add(RunQTO.doc.Layers[i].FullPath +
+                                    " (" + lateObjectCount + " object(s))");
+
+                                Logger.Warn("Calculate: layer '" + RunQTO.doc.Layers[i].FullPath +
+                                    "' holds " + lateObjectCount + " take-off object(s) but has no " +
+                                    "template row - it was added after Start Checkup and is NOT " +
+                                    "in the take-off.");
+                            }
+                            else
+                            {
+                                Logger.Info("Calculate: skipping layer without a template row: " + RunQTO.doc.Layers[i].FullPath);
+                            }
 
                             continue;
                         }
@@ -1648,6 +1687,14 @@ namespace QTO_Tool
                     MessageBox.Show(this.calculateHiddenSkipCount.ToString() + " hidden object(s) were excluded from " +
                         "the take-off - the checkup never verified them. Unhide them and re-run " +
                         "Start Checkup + Calculate if they belong in it.");
+                }
+
+                if (layersAddedAfterCheckup.Count > 0)
+                {
+                    MessageBox.Show("Layer(s) added after Start Checkup are NOT in the " +
+                        "take-off - their geometry was never verified:\n\n" +
+                        string.Join("\n", layersAddedAfterCheckup) +
+                        "\n\nRe-run Start Checkup and Calculate to include them.");
                 }
 
                 // Last statement of the try: a throw anywhere above (including

@@ -24,8 +24,8 @@ namespace QTO_Tool
         static readonly string Stage = FormworkMethods.StagingDir;
         static readonly string BreaksJson = Path.Combine(Stage, "pour_breaks_model.json");
         static readonly string DerivedModel = Path.Combine(Stage, "model_pourbreaks.3dm");
-        static readonly string SheetFile = Path.Combine(Stage, "breaksheet.3dm");
-        static readonly string SheetMeta = Path.Combine(Stage, "breaksheet.meta.json");
+        static readonly string SheetFile = Path.Combine(Stage, FormworkMethods.SheetFileName);
+        static readonly string SheetMeta = Path.Combine(Stage, FormworkMethods.SheetMetaFileName);
 
         const int ChildTimeoutMs = 15 * 60 * 1000;
 
@@ -42,6 +42,11 @@ namespace QTO_Tool
             // The stale-reason tooltip sits on a DISABLED radio button, and
             // WPF suppresses tooltips on disabled elements by default.
             System.Windows.Controls.ToolTipService.SetShowOnDisabled(this.InputDerived, true);
+
+            // The sheet is drawn and saved in a SECOND Rhino, so the moment
+            // the user alt-tabs back here is exactly when the dirty badge
+            // must already be current - three file stats, cheap enough.
+            this.Activated += (s, e) => RefreshSheetBadge();
         }
 
         private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -57,6 +62,7 @@ namespace QTO_Tool
             }
             RefreshStamp();
             RefreshDerivedAvailability();
+            RefreshSheetBadge();
         }
 
         // A busy window must not close silently: the Cancel button is the
@@ -84,6 +90,36 @@ namespace QTO_Tool
         {
             RefreshStamp();
             RefreshDerivedAvailability();
+            RefreshSheetBadge();
+        }
+
+        /// <summary>The dirty badge (P2): the sheet on disk was saved after
+        /// the last import, so its latest ink is not in the breaks JSON yet.
+        /// Advisory only - Split re-checks at click time and offers the
+        /// import; nothing is gated on the badge itself.</summary>
+        private void RefreshSheetBadge()
+        {
+            if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
+            {
+                RunQTO.doc = RhinoDoc.ActiveDoc;
+            }
+            string reason;
+            bool dirty = FormworkMethods.SheetDirty(RunQTO.doc, out reason);
+            // escaped, not a literal glyph: csc's fallback source encoding
+            // on a BOM-less file is the ANSI codepage, which would mangle it
+            this.ImportSheetButton.Content = dirty
+                ? "IMPORT SHEET \u25CF" : "IMPORT SHEET";
+            if (dirty)
+            {
+                this.ImportSheetButton.Background = Brushes.Orange;
+                this.ImportSheetButton.ToolTip = reason;
+            }
+            else
+            {
+                this.ImportSheetButton.ClearValue(
+                    System.Windows.Controls.Control.BackgroundProperty);
+                this.ImportSheetButton.ToolTip = null;
+            }
         }
 
         private void RefreshStamp()
@@ -205,6 +241,7 @@ namespace QTO_Tool
             {
                 RefreshStamp();
                 RefreshDerivedAvailability();
+                RefreshSheetBadge();
             }
         }
 
@@ -239,7 +276,8 @@ namespace QTO_Tool
         /// <summary>MAKE BREAK SHEET: lay every floor group out as a plan
         /// cell in a separate 3dm. Runs IN-PROCESS via File3dm (read-only on
         /// the open model file, writes only staging files) - no child Rhino,
-        /// no REVERT impact.</summary>
+        /// no REVERT impact. A successful MAKE offers the near-TYP merges
+        /// the generator reported (P2).</summary>
         private void MakeSheet_Clicked(object sender, RoutedEventArgs e)
         {
             if (File.Exists(SheetFile))
@@ -256,6 +294,18 @@ namespace QTO_Tool
                     return;
                 }
             }
+            if (RunMakeCore())
+            {
+                TryOfferNearTypMerges();
+            }
+            RefreshSheetBadge();
+        }
+
+        /// <summary>One MAKE run; true only when the sheet was verifiably
+        /// (re)written - judged by what changed on disk, never by the
+        /// previous run's log.</summary>
+        private bool RunMakeCore()
+        {
             if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
             {
                 RunQTO.doc = RhinoDoc.ActiveDoc;
@@ -277,18 +327,121 @@ namespace QTO_Tool
             {
                 Logger.Error("Break-sheet generation failed - " + errorFile, null);
                 AppendLog("MAKE FAILED - see " + errorFile);
+                return false;
             }
-            else if (!File.Exists(SheetFile) ||
+            if (!File.Exists(SheetFile) ||
                 (sheetBefore != null &&
                  File.GetLastWriteTimeUtc(SheetFile) == sheetBefore.Value))
             {
                 AppendLog("MAKE did not (re)write the sheet - see the log above.");
+                return false;
             }
-            else
+            AppendLog("Sheet: " + SheetFile + " - OPEN SHEET, draw, save, " +
+                "then IMPORT SHEET.");
+            return true;
+        }
+
+        /// <summary>P2: the generator reports near-identical cells (and the
+        /// merges already applied) in the sheet meta; offer them as
+        /// checkboxes. A changed pick writes the directive file and
+        /// regenerates ONCE, with no re-offer after the merge run - the
+        /// dialog cannot loop.</summary>
+        private void TryOfferNearTypMerges()
+        {
+            List<SheetMergeUI.MergeChoice> items = ReadMergeChoices();
+            if (items.Count == 0)
             {
-                AppendLog("Sheet: " + SheetFile + " - OPEN SHEET, draw, save, " +
-                    "then IMPORT SHEET.");
+                return;
             }
+            SheetMergeUI dialog = new SheetMergeUI(items) { Owner = this };
+            if (dialog.ShowDialog() != true || !dialog.Changed)
+            {
+                return;
+            }
+            try
+            {
+                FormworkMethods.WriteSheetMergeFile(RunQTO.doc, dialog.CheckedSets);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Could not write the sheet merge directives.", ex);
+                AppendLog("TYP merge directives could not be written: " + ex.Message);
+                return;
+            }
+            AppendLog("--- regenerate with TYP merges ---");
+            RunMakeCore();
+        }
+
+        /// <summary>Merge candidates from the sheet meta: applied merges
+        /// first (checked - unchecking separates them again), then the open
+        /// near-TYP suggestions. The ORDER is load-bearing: the generator
+        /// validates directives incrementally in file order against union
+        /// fingerprints, so applied merges must land in the file before the
+        /// suggestions that were computed on top of them. Unreadable meta
+        /// means no dialog, never a throw - MAKE already succeeded and must
+        /// report that way.</summary>
+        private List<SheetMergeUI.MergeChoice> ReadMergeChoices()
+        {
+            List<SheetMergeUI.MergeChoice> items = new List<SheetMergeUI.MergeChoice>();
+            try
+            {
+                if (!File.Exists(SheetMeta))
+                {
+                    return items;
+                }
+                JObject meta = JObject.Parse(File.ReadAllText(SheetMeta));
+                JArray merged = meta["merged"] as JArray;
+                if (merged != null)
+                {
+                    foreach (JToken entry in merged)
+                    {
+                        List<string> floors = entry.ToObject<List<string>>();
+                        if (floors == null || floors.Count < 2)
+                        {
+                            continue;
+                        }
+                        items.Add(new SheetMergeUI.MergeChoice
+                        {
+                            Floors = floors,
+                            Label = "MERGED: " + string.Join(", ", floors) +
+                                "   (uncheck to separate the cells again)",
+                            Applied = true,
+                        });
+                    }
+                }
+                JArray nearTyp = meta["near_typ"] as JArray;
+                if (nearTyp != null)
+                {
+                    foreach (JToken entry in nearTyp)
+                    {
+                        List<string> floorsA = entry["floors_a"] == null
+                            ? null : entry["floors_a"].ToObject<List<string>>();
+                        List<string> floorsB = entry["floors_b"] == null
+                            ? null : entry["floors_b"].ToObject<List<string>>();
+                        if (floorsA == null || floorsB == null ||
+                            floorsA.Count == 0 || floorsB.Count == 0)
+                        {
+                            continue;
+                        }
+                        List<string> floors = new List<string>(floorsA);
+                        floors.AddRange(floorsB);
+                        items.Add(new SheetMergeUI.MergeChoice
+                        {
+                            Floors = floors,
+                            Label = string.Join(", ", floorsA) + "  +  " +
+                                string.Join(", ", floorsB) +
+                                "   (footprints differ by " + entry["diff"] +
+                                " of " + entry["union"] + " vertices)",
+                            Applied = false,
+                        });
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Sheet meta merge info unreadable.", ex);
+            }
+            return items;
         }
 
         private void OpenSheet_Clicked(object sender, RoutedEventArgs e)
@@ -306,19 +459,49 @@ namespace QTO_Tool
                 "then IMPORT SHEET here.");
         }
 
+        private void ImportSheet_Clicked(object sender, RoutedEventArgs e)
+        {
+            ImportSheetCore();
+            RefreshSheetBadge();
+        }
+
         /// <summary>IMPORT SHEET: read the drawn sheet via File3dm and write
         /// the breaks JSON. Loud refusals live in the Python side; the
-        /// dialogs here gate the two-truths cases.</summary>
-        private void ImportSheet_Clicked(object sender, RoutedEventArgs e)
+        /// dialogs here gate the two-truths cases. Returns true only when
+        /// the breaks JSON was verifiably rewritten - the pre-split
+        /// auto-import aborts the split on anything else.</summary>
+        private bool ImportSheetCore()
         {
             if (!File.Exists(SheetFile))
             {
                 MessageBox.Show("No break sheet found - run MAKE BREAK SHEET first.");
-                return;
+                return false;
             }
             if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
             {
                 RunQTO.doc = RhinoDoc.ActiveDoc;
+            }
+            // The sheet meta names the model it was generated from; the
+            // Python side only WARNS on a mismatch and defers to this
+            // dialog. Machine-wide staging: the sheet on disk may be
+            // another project's, and importing it would REPLACE this
+            // model file's breaks JSON under matching floor names.
+            string sheetDoc = FormworkMethods.SheetMetaDocPath();
+            string thisDoc = RunQTO.doc.Path ?? "";
+            if (sheetDoc.Length > 0 && thisDoc.Length > 0 &&
+                !string.Equals(sheetDoc, thisDoc, StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBoxResult foreignConfirm = MessageBox.Show(
+                    "The break sheet was generated from a DIFFERENT model file:\n" +
+                    sheetDoc + "\n\nImporting it REPLACES this model file's " +
+                    "breaks JSON. Import anyway?",
+                    "Sheet from another model", MessageBoxButton.OKCancel);
+                if (foreignConfirm != MessageBoxResult.OK)
+                {
+                    return false;
+                }
+                Logger.Info("Sheet import over a foreign-model sheet confirmed by user: " +
+                    sheetDoc);
             }
             // Two-truths gate 1: live _POURBREAK curves exist. The import
             // overwrites the JSON from the sheet; the layer curves stay in
@@ -333,7 +516,7 @@ namespace QTO_Tool
                     "Layer breaks also present", MessageBoxButton.OKCancel);
                 if (confirm != MessageBoxResult.OK)
                 {
-                    return;
+                    return false;
                 }
             }
             // Two-truths gate 2: an existing JSON from another surface.
@@ -353,7 +536,7 @@ namespace QTO_Tool
                         "Overwrite breaks JSON", MessageBoxButton.OKCancel);
                     if (confirm != MessageBoxResult.OK)
                     {
-                        return;
+                        return false;
                     }
                 }
             }
@@ -368,10 +551,12 @@ namespace QTO_Tool
             AppendLog("--- import break sheet ---");
             AppendLog(FormworkMethods.ReadLogTail("breaksheet_import_log.txt", 40));
 
+            bool imported = true;
             if (File.Exists(errorFile))
             {
                 Logger.Error("Break-sheet import failed - " + errorFile, null);
                 AppendLog("IMPORT FAILED - see " + errorFile);
+                imported = false;
             }
             else if (!File.Exists(BreaksJson) ||
                 (jsonBefore != null &&
@@ -379,9 +564,11 @@ namespace QTO_Tool
             {
                 AppendLog("IMPORT wrote nothing - the refusal reasons are in " +
                     "the log above; the previous breaks JSON is unchanged.");
+                imported = false;
             }
             // a changed breaks JSON makes any derived model stale - reflect it
             RefreshDerivedAvailability();
+            return imported;
         }
 
         /// <summary>Read-only probe for _POURBREAK curves in the open model
@@ -405,8 +592,10 @@ namespace QTO_Tool
                     if (obj == null || obj.Attributes == null) { continue; }
                     Rhino.DocObjects.Layer layer = RunQTO.doc.Layers[obj.Attributes.LayerIndex];
                     string path = layer == null ? "" : (layer.FullPath ?? "");
-                    if (path.StartsWith(FormworkMethods.PourBreakLayer,
-                        StringComparison.OrdinalIgnoreCase))
+                    // strict tree matcher: harvest walks exactly this tree,
+                    // so the two-truths dialog must not claim curves (e.g. on
+                    // "_POURBREAK_OLD") that harvest would never pick up
+                    if (FormworkMethods.LayerInTree(path, FormworkMethods.PourBreakLayer))
                     {
                         return true;
                     }
@@ -464,17 +653,109 @@ namespace QTO_Tool
             {
                 return;
             }
+            // Judge the run by what changed on disk, never by assumption:
+            // the driver calls main() directly (no __main__ error file),
+            // and a refused floor used to be invisible here - the UI said
+            // "re-drawn" while the ERROR sat on the Rhino command line.
+            string resultFile = Path.Combine(Stage, "pourbreak_restore_result.json");
+            try
+            {
+                if (File.Exists(resultFile)) { File.Delete(resultFile); }
+                // a stale log tail from a run that dies before main() must
+                // not present as this run's diagnostics either
+                string oldLog = Path.Combine(Stage, "pourbreak_restore_log.txt");
+                if (File.Exists(oldLog)) { File.Delete(oldLog); }
+            }
+            catch { }
+            // The delete can fail (lock): the mtime guard below keeps a
+            // stale result from masquerading as this run's outcome anyway.
+            DateTime? resultBefore = File.Exists(resultFile)
+                ? File.GetLastWriteTimeUtc(resultFile) : (DateTime?)null;
+
             string script = Path.Combine(Stage, "pb_gui_restore.py");
             RhinoApp.RunScript("_-RunPythonScript " + script, false);
             AppendLog("--- restore ---");
-            AppendLog("Breaks re-drawn from " + BreaksJson);
+            AppendLog(FormworkMethods.ReadLogTail("pourbreak_restore_log.txt", 30));
+
+            if (!File.Exists(resultFile) ||
+                (resultBefore != null &&
+                 File.GetLastWriteTimeUtc(resultFile) == resultBefore.Value))
+            {
+                Logger.Error("Restore did not write its result file - the run failed.", null);
+                AppendLog("RESTORE FAILED - nothing was verifiably re-drawn; " +
+                    "see the log above.");
+                return;
+            }
+            try
+            {
+                JObject result = JObject.Parse(File.ReadAllText(resultFile));
+                int added = (int?)result["added"] ?? 0;
+                int skipped = (int?)result["floors_skipped"] ?? 0;
+                if (skipped > 0)
+                {
+                    Logger.Warn("Restore skipped " + skipped + " floor(s) - " +
+                        "their breaks were NOT re-drawn.");
+                    AppendLog("RESTORE INCOMPLETE: " + skipped + " floor(s) were " +
+                        "SKIPPED (not in this model file's floor table) - their " +
+                        "breaks are NOT re-drawn. " + added + " object(s) added.");
+                }
+                else
+                {
+                    AppendLog("Breaks re-drawn from " + BreaksJson + " (" +
+                        added + " object(s) added).");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Restore result file unreadable.", ex);
+                AppendLog("Restore result unreadable (" + ex.Message +
+                    ") - check the log above before trusting the restore.");
+            }
         }
 
         private void Split_Clicked(object sender, RoutedEventArgs e)
         {
+            // P2: the sheet on disk is ahead of the breaks JSON - offer to
+            // pull it in first, so Split cannot silently cut by an older
+            // import while the newest ink sits unimported in the sheet file.
+            // (SheetDirty is docPath-guarded: another project's sheet never
+            // triggers this.)
+            if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
+            {
+                RunQTO.doc = RhinoDoc.ActiveDoc;
+            }
+            string dirtyReason;
+            if (FormworkMethods.SheetDirty(RunQTO.doc, out dirtyReason))
+            {
+                MessageBoxResult pull = MessageBox.Show(
+                    dirtyReason + "\n\nYes: import the sheet now, then split." +
+                    "\nNo: split with the current breaks JSON." +
+                    "\nCancel: do neither.",
+                    "Break sheet not imported", MessageBoxButton.YesNoCancel);
+                if (pull == MessageBoxResult.Cancel)
+                {
+                    return;
+                }
+                if (pull == MessageBoxResult.Yes)
+                {
+                    if (!ImportSheetCore())
+                    {
+                        AppendLog("The pre-split import did not update the breaks " +
+                            "JSON - split aborted; fix the sheet and try again.");
+                        Logger.Info("Split aborted: pre-split sheet import refused or failed.");
+                        RefreshSheetBadge();
+                        return;
+                    }
+                    RefreshSheetBadge();
+                }
+                else
+                {
+                    Logger.Info("Split proceeding without importing the newer sheet (user chose No).");
+                }
+            }
             if (!File.Exists(BreaksJson))
             {
-                MessageBox.Show("No harvested breaks found. Run HARVEST first.");
+                MessageBox.Show("No breaks JSON found. Run HARVEST or IMPORT SHEET first.");
                 return;
             }
             if (!EnsureFresh() || !BreaksMatchThisModel())

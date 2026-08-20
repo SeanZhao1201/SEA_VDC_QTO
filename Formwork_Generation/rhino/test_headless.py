@@ -246,7 +246,7 @@ def main():
           "doc has {0}, want {1}".format(n_now, n_original + n_added))
     fw_layers = [l for l in doc.Layers if l is not None and not l.IsDeleted
                  and (l.FullPath == fw.FW_ROOT
-                      or l.FullPath.startswith(fw.FW_ROOT + ":"))]
+                      or l.FullPath.startswith(fw.FW_ROOT + "::"))]
     check("formwork layers created", len(fw_layers) > 0,
           "{0} layers".format(len(fw_layers)))
     n_log = len(plog.lines)
@@ -257,7 +257,7 @@ def main():
           "doc has {0}, want {1}".format(n_after, n_original))
     fw_layers = [l for l in doc.Layers if l is not None and not l.IsDeleted
                  and (l.FullPath == fw.FW_ROOT
-                      or l.FullPath.startswith(fw.FW_ROOT + ":"))]
+                      or l.FullPath.startswith(fw.FW_ROOT + "::"))]
     check("purge removes formwork layers", len(fw_layers) == 0,
           "{0} left".format(len(fw_layers)))
 

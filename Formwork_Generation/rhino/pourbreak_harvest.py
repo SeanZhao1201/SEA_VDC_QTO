@@ -64,7 +64,7 @@ def is_pb_layer(doc, layer_index):
         return False
     fp = (layer.FullPath or "").lower()
     root = PB_ROOT.lower()
-    return fp == root or fp.startswith(root + ":")
+    return fp == root or fp.startswith(root + "::")
 
 
 def pb_sublayer(doc, layer_index):

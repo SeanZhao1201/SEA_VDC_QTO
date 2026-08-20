@@ -597,7 +597,7 @@ def _is_formwork_layer(doc, layer_index):
         return False
     fp = (layer.FullPath or "").lower()
     root = FW_ROOT.lower()
-    return fp == root or fp.startswith(root + ":")
+    return fp == root or fp.startswith(root + "::")
 
 
 def _safe_layer_name(name):

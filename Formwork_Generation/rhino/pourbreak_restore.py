@@ -56,9 +56,10 @@ def _floor_elevation(fl, floor_elevations):
 def restore_document(doc, data, log):
     """Add every break curve + pour dot from ``data`` to the doc.
 
-    Returns the number of objects added. Layers: ``_POURBREAK::<floor>``
-    for floors with a real name, the root layer otherwise — so a
-    re-harvest binds every restored break to the same floor by layer.
+    Returns ``(n_added, n_floor_skipped)``. Layers:
+    ``_POURBREAK::<floor>`` for floors with a real name, the root layer
+    otherwise — so a re-harvest binds every restored break to the same
+    floor by layer.
     """
     floor_elev = fw.read_floor_elevations(doc)
     n_added = 0
@@ -128,7 +129,7 @@ def restore_document(doc, data, log):
         n_added, PB_ROOT,
         " ({0} floor(s) SKIPPED — see errors above)".format(
             n_floor_skipped) if n_floor_skipped else ""))
-    return n_added
+    return n_added, n_floor_skipped
 
 
 def wipe_pourbreaks(doc, log):
@@ -159,12 +160,27 @@ def main():
     log = fw.Log()
     path = default_json_path(doc)
     log("pourbreak_restore <- {0}".format(path))
-    with io.open(path, encoding="utf-8") as fh:
-        data = json.loads(fh.read())
-    if data.get("version", 1) < 2:
-        import split_pourbreaks
-        data = split_pourbreaks.upconvert_v1(data, log)
-    return restore_document(doc, data, log)
+    n_added = 0
+    try:
+        with io.open(path, encoding="utf-8") as fh:
+            data = json.loads(fh.read())
+        if data.get("version", 1) < 2:
+            import split_pourbreaks
+            data = split_pourbreaks.upconvert_v1(data, log)
+        n_added, n_skipped = restore_document(doc, data, log)
+        # The C# handler judges the run by THIS file appearing (deleted
+        # pre-run), never by RunScript's return or the previous run's log
+        # - the driver calls main() directly, so the __main__ error
+        # writer below never runs on the GUI path.
+        with io.open(os.path.join(STAGE, "pourbreak_restore_result.json"),
+                     "w", encoding="utf-8") as fh:
+            fh.write(u"{0}".format(json.dumps(
+                {"added": n_added, "floors_skipped": n_skipped})))
+    finally:
+        # the log must reach disk even on a throw, or the UI pane has
+        # nothing to show for a failed restore
+        log.save(os.path.join(STAGE, "pourbreak_restore_log.txt"))
+    return n_added
 
 
 if __name__ == "__main__":

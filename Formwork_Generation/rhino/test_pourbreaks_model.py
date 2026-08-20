@@ -90,11 +90,12 @@ def main():
     # ---- the new authored path, end to end ----
     data = pbs.upconvert_v1(v1, fw.Log())
     rlog = fw.Log()
-    n_restored = pbr.restore_document(doc, data, rlog)
+    n_restored, n_rskipped = pbr.restore_document(doc, data, rlog)
     lines.extend(rlog.lines)
     check("restore added every break + marker",
-          n_restored == n_cuts + n_markers,
-          "restored {0}, want {1}".format(n_restored, n_cuts + n_markers))
+          n_restored == n_cuts + n_markers and n_rskipped == 0,
+          "restored {0}, want {1} (skipped {2})".format(
+              n_restored, n_cuts + n_markers, n_rskipped))
 
     hlog = fw.Log()
     h = pbh.harvest_document(doc, hlog)

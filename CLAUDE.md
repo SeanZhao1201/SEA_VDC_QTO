@@ -2,10 +2,50 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Development status — 2026-08-17 (keep this section current when work lands)
+## Development status — 2026-08-19 (keep this section current when work lands)
 
-Active branch: **`fix/audit-batch-1`** → **PR #17** (open, targets master).
-It carries two bodies of work, both agent-reviewed and green-built:
+**Audit batch-3 COMPLETE on branch `fix/audit-batch-3`** (2026-08-19,
+stacked on `feat/breaksheet-p2`; **PR #18**, open, carries BOTH bodies
+of work below plus this file's status commits - one big PR by the
+user's choice, same pattern as #17). The 16 unverified
+2026-08-15 audit findings were adversarially verified (10-agent
+workflow): **10 confirmed and fixed, 6 refuted** (VolumeMassProperties
+guards — per-object catch already contains it; SET FLOOR red — fixed in
+batch 1.5; Excel zombie window, IfcStore dispose, =SUM degenerate,
+sideform panel_thickness — impact chains broken in current code). Fixed:
+gross-volume probe (both directions, wall-depth-bounded rays, null
+guards on CreatePlanarBreps/RemoveHoles — degrade to net, never drop the
+element), Blockify re-run name collisions (bump past existing
+definitions), StairTemplate `DegradeToSideOnly` at 4 failure points,
+layers added after Start Checkup now tallied + dialog, measured-zero
+exports as 0 not "-", `_FORMWORK`/`_POURBREAK` matchers split into
+strict-tree (`LayerInTree`, fingerprint/scan/harvest-parity sites,
+Python `::` tightened to match) vs gate-union (segment OR prefix — the
+destructive-checkup gate must stay at least as broad as every earlier
+build), Restore judged by a fresh `pourbreak_restore_result.json`
+(skipped floors loud), splitter pass-3 AddBrep Guid checks with full
+rollback + honest report. Its own 14-agent diff review confirmed 8
+follow-up defects, all folded in. Verified in real Rhino 8: formwork,
+sideforms, pourbreaks, golden Bellwether, breaksheet — **ALL PASS**;
+builds 0/0.
+
+**Break-sheet P2 COMPLETE** (2026-08-19, in PR #18 via the stacked
+branch): near-TYP merge UI (`SheetMergeUI` dialog after MAKE →
+`breaksheet_merge.json` directives, union-fingerprint validation in file
+order — one metric with the suggestions), dirty badge + auto-import-on-
+Split (`FormworkMethods.SheetDirty`, docPath-guarded, only a sheet-kind
+JSON clears it; Split offers Yes/No/Cancel), and the import-summary
+ADVISORY (per-pour areas + nearest-grid offsets) with the P1 preservation
+fix (`target_area`/`grid_x`/`grid_y` survive reimports, foreign-JSON
+laundering guard, ink-less covered cells keep their target). Hardened by
+a 19-agent adversarial review — 14 confirmed defects, all fixed; headless
+test grew 30 → 53 asserts, **ALL PASS in real Rhino 8**; C# builds 0/0.
+Contract details: `Formwork_Generation/CLAUDE.md`, "Break sheet P2".
+Still user-only: the manual Rhino pass over the P2 flows (MAKE → merge
+dialog → draw → badge → Split auto-import).
+
+**PR #17 MERGED to master** (`3ddcfe8`, 2026-08-17). It landed two bodies
+of work, both agent-reviewed and green-built:
 
 1. **The 2026-08-15 audit remediation — all 17 confirmed bugs fixed** across
    three batches (stair face classification, inch-model area/length
@@ -23,24 +63,36 @@ It carries two bodies of work, both agent-reviewed and green-built:
    `_POURBREAK` layer ceremony. Contract: `Formwork_Generation/CLAUDE.md`,
    "Break sheet". 30-assert headless test ALL PASS in real Rhino 8.
 
-**Pending before merge:** a manual Rhino pass over the formwork/break-sheet
-flows (MAKE → draw → IMPORT → SPLIT on the real model); re-run
-`test_pourbreaks_model.py` (golden) and `test_sideforms_headless.py` (its
-scene changed with the instance-layer fix) via the dev loop.
+**Post-merge verification, 2026-08-17:** `test_pourbreaks_model.py`
+(golden) and `test_sideforms_headless.py` both re-run in real Rhino 8 —
+**ALL PASS**. Still pending, user-only: the manual Rhino pass over the
+formwork/break-sheet flows (MAKE → draw → IMPORT → SPLIT on the real
+model) and the 30-second floor-staleness retest (edit a floor after
+Calculate, confirm exports disable).
 
-**Agreed next phases (not started):** break-sheet P2 = near-TYP merge UI,
-auto-import-on-Split + dirty badge, advisory pour areas/grid offsets in the
-import summary; P3 = read-only conduit rendering of the breaks JSON in the
-live model, named Option-1/2 sheets. Grid-line furniture is deferred: the
+**Agreed next phases:** break-sheet P2 — DONE; audit batch-3 — DONE
+(see above; the 2026-08-15 audit is now fully dispositioned: 17+10
+fixed, 1+6 refuted). P3 (not started) = read-only conduit rendering of
+the breaks JSON in the live model, named Option-1/2 sheets. Grid-line
+furniture is deferred: the
 user's grids come from imported PDF/DWG files with arbitrary layer names;
-the osnap-able slab outlines are the drawing reference for now.
+the osnap-able slab outlines are the drawing reference for now (the
+import ADVISORY reads the optional `grid_x`/`grid_y` from the breaks
+JSON when present).
 
 Build with the machine-local SDK when no system one exists:
 `%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe build QTO_Tool\QTO_Tool.csproj -c Release`.
 Headless test loop: stage `Formwork_Generation/rhino/*.py` into
 `%LOCALAPPDATA%\qto_fw_test`, then
 `Rhino.exe /nosplash /notemplate /runscript="-_RunPythonScript <staged test>"`
-with `FW_HEADLESS=1`; reports land next to the staged scripts.
+with `FW_HEADLESS=1`; reports land next to the staged scripts. Two
+hard-won launch facts: the quote must open **after** `=`
+(`/runscript="-_Run…"`) — a fully-quoted argument token (what bash/MSYS
+produces) makes Rhino open and idle forever, so launch via PowerShell
+`Start-Process -ArgumentList` with the exact string above; and the golden
+test consumes the staged `pour_breaks_model.json`, which
+`test_breaksheet_headless.py` overwrites with its synthetic scene — restage
+`Formwork_Generation/out/pour_breaks_model.json` before a golden run.
 
 ## What this is
 

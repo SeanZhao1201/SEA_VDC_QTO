@@ -14,7 +14,10 @@ Sheet anatomy (all coordinates in MODEL units):
   vertex fingerprint) share ONE cell, labelled with every member floor -
   the typical-floor collapse proven on the real model 2026-08-17 (tower
   grouped 5+5, podium floors individual). Near-identical groups are NOT
-  auto-merged; the log names them and the deviation so the modeler decides.
+  auto-merged; they go into the meta as ``near_typ`` suggestions and the
+  FormworkUI TYP MERGE dialog writes the user's picks to
+  ``breaksheet_merge.json`` (P2) - this script applies them on the next
+  MAKE, re-validating each pair against the live fingerprints first.
 - Locked furniture per cell: slab top-face outlines (each slab separately
   - seeing existing deck joints avoids drawing redundant breaks, the L01
   lesson), opening loops, support footprints below (bbox rectangles -
@@ -54,6 +57,9 @@ import formwork_gen_rhino as fw
 SCHEMA_VERSION = 1
 SHEET_FILE = os.environ.get("BS_SHEET") or os.path.join(STAGE, "breaksheet.3dm")
 META_FILE = os.environ.get("BS_META") or os.path.join(STAGE, "breaksheet.meta.json")
+# P2: user-directed near-TYP merges, written by the FormworkUI merge dialog
+MERGE_FILE = os.environ.get("BS_MERGE") or os.path.join(
+    STAGE, "breaksheet_merge.json")
 LOG_FILE = os.path.join(STAGE, "breaksheet_log.txt")
 
 SLAB_KEYWORD = "slab"
@@ -236,7 +242,7 @@ def fingerprint(floor, quant):
 
 
 def group_floors(floors, doc, log):
-    """Exact-fingerprint groups, ascending z. Near-misses reported only."""
+    """Exact-fingerprint groups, ascending z."""
     quant = FP_QUANT_M * _scale_from_m(doc)
     groups = []
     by_fp = {}
@@ -245,7 +251,7 @@ def group_floors(floors, doc, log):
         if fp in by_fp:
             by_fp[fp]["members"].append(f)
         else:
-            g = {"members": [f], "fp": fp}
+            g = {"members": [f], "fp": fp, "merged": False}
             by_fp[fp] = g
             groups.append(g)
 
@@ -254,22 +260,188 @@ def group_floors(floors, doc, log):
         if len(names) > 1:
             log("TYP group: {0} ({1} identical floors)".format(
                 ", ".join(names), len(names)))
+    return groups
 
-    # near-miss report: the modeler decides about merging (P2 adds the UI)
+
+def _near_typ(fp_a, fp_b):
+    """(qualifies, diff, union) under the near-TYP rule. One rule, one
+    metric for the suggestion report AND the merge-directive validation:
+    both compare the CURRENT cells' fingerprints (union fingerprints for
+    already-merged cells), so what the dialog offers is exactly what the
+    validation accepts."""
+    union = len(fp_a | fp_b)
+    if union == 0:
+        return False, 0, 0
+    diff = len(fp_a ^ fp_b)
+    return 0 < diff <= max(8, int(0.15 * union)), diff, union
+
+
+def near_typ_pairs(groups, log):
+    """Near-miss suggestions between the CURRENT groups (so pairs the user
+    already merged drop out). The modeler decides via the FormworkUI merge
+    dialog; nothing is ever auto-merged."""
+    pairs = []
     for i in range(len(groups)):
         for j in range(i + 1, len(groups)):
-            a, b = groups[i]["fp"], groups[j]["fp"]
-            union = len(a | b)
-            if union == 0:
-                continue
-            diff = len(a ^ b)
-            if 0 < diff <= max(8, int(0.15 * union)):
+            ok, diff, union = _near_typ(groups[i]["fp"], groups[j]["fp"])
+            if ok:
+                a, b = groups[i], groups[j]
+                pairs.append({
+                    "a": a["members"][0]["name"],
+                    "b": b["members"][0]["name"],
+                    "floors_a": [m["name"] for m in a["members"]],
+                    "floors_b": [m["name"] for m in b["members"]],
+                    "diff": diff, "union": union,
+                })
                 log("NEAR-TYP: cells '{0}' and '{1}' differ by only {2} of "
                     "{3} footprint vertices - review whether they should "
-                    "share one cell (edit both for now)".format(
-                        groups[i]["members"][0]["name"],
-                        groups[j]["members"][0]["name"], diff, union))
-    return groups
+                    "share one cell (the TYP MERGE dialog applies it)".format(
+                        a["members"][0]["name"], b["members"][0]["name"],
+                        diff, union))
+    return pairs
+
+
+def _read_merge_directives(doc, log):
+    """User merge sets from MERGE_FILE: [[floor, floor, ...], ...].
+
+    The staging folder is machine-wide with one fixed file name, so a
+    directive file left behind by ANOTHER project must not silently
+    regroup this sheet - same guard as the carried-in breaks JSON."""
+    if not os.path.exists(MERGE_FILE):
+        return []
+    try:
+        data = json.loads(io.open(MERGE_FILE, encoding="utf-8").read())
+    except Exception as ex:
+        log("WARNING: merge directive file unreadable ({0}) - no merges "
+            "applied".format(ex))
+        return []
+    # valid JSON is not enough: a foreign tool's '[]' or '"x"' in the
+    # machine-wide staging folder must degrade to the same warning, never
+    # crash the whole MAKE
+    if not isinstance(data, dict):
+        log("WARNING: merge directive file malformed (top level is not an "
+            "object) - no merges applied")
+        return []
+    src = data.get("docPath")
+    if not hasattr(src, "lower"):
+        src = ""
+    doc_path = doc.Path or ""
+    if src and doc_path and src.lower() != doc_path.lower():
+        log("WARNING: the merge directives were written for a DIFFERENT "
+            "model file ({0}) - ignored. Re-pick the merges in the TYP "
+            "MERGE dialog.".format(src))
+        return []
+    entries = data.get("merge")
+    if not isinstance(entries, list):
+        entries = []
+    sets = []
+    for entry in entries:
+        try:
+            names = [n for n in entry if hasattr(n, "lower")]
+        except TypeError:
+            continue
+        if len(names) >= 2:
+            sets.append(names)
+    return sets
+
+
+def apply_merges(groups, directives, log):
+    """Union groups per the user's directives - validated, never blind.
+
+    Directives apply IN FILE ORDER, each validated against the cells'
+    CURRENT fingerprints - already-applied merges included, i.e. the
+    union fingerprint - with the same near-TYP rule the suggestions are
+    computed with. One metric on both sides: every merge the dialog
+    offers is honorable, and a stale directive whose floors genuinely
+    diverged since it was written fails loudly instead of gluing them.
+    (The dialog writes applied merges before new picks, so an offered
+    merged-group + neighbor suggestion validates against the same union
+    fingerprint it was suggested from.)"""
+    if not directives:
+        return groups
+    by_floor = {}
+    for gi, g in enumerate(groups):
+        for m in g["members"]:
+            by_floor[m["name"]] = gi
+
+    # union-find over the directive sets (chained directives merge, each
+    # union step re-validated against the accumulated fingerprint)
+    parent = list(range(len(groups)))
+    fps = [g["fp"] for g in groups]      # current fingerprint per root
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for names in directives:
+        roots = []
+        for n in names:
+            if n not in by_floor:
+                log("WARNING: merge directive names floor '{0}' which has "
+                    "no cell on this sheet - that name is ignored".format(n))
+                continue
+            r = find(by_floor[n])
+            if r not in roots:
+                roots.append(r)
+        if len(roots) < 2:
+            continue
+        # validate every pair of CURRENT cells in the requested set
+        # before unioning anything from this directive
+        refused = None
+        for i in range(len(roots)):
+            for j in range(i + 1, len(roots)):
+                a, b = fps[roots[i]], fps[roots[j]]
+                if a == b:
+                    continue
+                ok, diff, union = _near_typ(a, b)
+                if not ok:
+                    refused = (groups[roots[i]]["members"][0]["name"],
+                               groups[roots[j]]["members"][0]["name"],
+                               diff, union)
+                    break
+            if refused:
+                break
+        if refused:
+            log("MERGE REFUSED for {0}: the cells holding '{1}' and '{2}' "
+                "differ by {3} of {4} footprint vertices - beyond the "
+                "near-TYP threshold. The cells stay separate; re-pick in "
+                "the TYP MERGE dialog.".format(
+                    ", ".join(names), refused[0], refused[1],
+                    refused[2], refused[3]))
+            continue
+        root0 = roots[0]
+        merged_fp = fps[root0]
+        for r in roots[1:]:
+            parent[r] = root0
+            merged_fp = merged_fp | fps[r]
+        fps[root0] = merged_fp
+
+    merged = {}
+    out = []
+    for gi, g in enumerate(groups):
+        root = find(gi)
+        if root not in merged:
+            merged[root] = g
+            out.append(g)
+        else:
+            target = merged[root]
+            target["members"].extend(g["members"])
+            target["merged"] = True
+    for root, g in merged.items():
+        # the surviving group carries the union fingerprint, so the
+        # next MAKE's suggestions and validations both see it
+        g["fp"] = fps[root]
+    for g in out:
+        if g["merged"]:
+            g["members"].sort(key=lambda m: m["z"])
+            log("MERGED per user directive: {0} share one cell "
+                "(representative '{1}' - its footprint is the one "
+                "drawn)".format(
+                    ", ".join(m["name"] for m in g["members"]),
+                    g["members"][0]["name"]))
+    return out
 
 
 def _existing_breaks(doc, log):
@@ -411,8 +583,13 @@ def build_sheet(doc, groups, existing, log):
             add_poly([[x + dx, y + dy] for x, y in ring], li_support)
 
         names = [m["name"] for m in members]
+        # a user-merged cell says so on the sheet: the outlines are the
+        # representative's, and the other members' slabs only NEARLY match
+        typ_tag = "TYP x{0} (MERGED)" if cell["group"].get("merged") \
+            else "TYP x{0}"
         label = names[0] if len(names) == 1 else \
-            "{0} TYP x{1}: {2}".format(names[0], len(names), ", ".join(names))
+            "{0} {1}: {2}".format(names[0], typ_tag.format(len(names)),
+                                  ", ".join(names))
         add_dot(label, frame[0] + margin * 0.25, frame[3] - margin * 0.25,
                 li_label)
 
@@ -481,8 +658,15 @@ def main():
         log.save(LOG_FILE)
         return None
     groups = group_floors(floors, doc, log)
+    groups = apply_merges(groups, _read_merge_directives(doc, log), log)
+    near = near_typ_pairs(groups, log)
     existing = _existing_breaks(doc, log)
     f3, meta = build_sheet(doc, groups, existing, log)
+    # the FormworkUI merge dialog reads both: suggestions still open, and
+    # the merges currently applied (so unchecking one un-merges it)
+    meta["near_typ"] = near
+    meta["merged"] = [[m["name"] for m in g["members"]]
+                      for g in groups if g.get("merged")]
 
     # write the sheet as a Rhino 7 file so a Rhino 7 host can read it back;
     # a Rhino 8 host reads both

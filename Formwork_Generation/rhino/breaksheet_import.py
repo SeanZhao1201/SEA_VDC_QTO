@@ -328,7 +328,11 @@ def import_sheet(log):
     old = {}
     if os.path.exists(pb_json):
         try:
-            old = json.loads(io.open(pb_json, encoding="utf-8").read())
+            # `with`, never a bare read: IronPython has no refcount
+            # collection and an unclosed .NET stream keeps the JSON locked
+            # (a later delete fails; rewrites merely share)
+            with io.open(pb_json, encoding="utf-8") as fh:
+                old = json.loads(fh.read())
         except Exception as ex:
             log("WARNING: previous JSON unreadable ({0}) - floors without "
                 "a cell, target areas and the grid could not be "

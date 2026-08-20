@@ -4,6 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development status — 2026-08-19 (keep this section current when work lands)
 
+**Break-sheet P3 COMPLETE on branch `feat/breaksheet-p3`** (2026-08-19,
+**PR #19**, open; pre-merge manual checklist in the PR body — overlay
+pass, File>Open kill-switch, SAVE/LOAD round trip, plus the carried-over
+#18 items): read-only overlay (`PourBreakOverlay`, a
+DisplayConduit singleton — active breaks JSON drawn into the live
+viewports, zero objects added, CloseDocument hook + whole-parse guard +
+docPath refusal with a LOAD-OPTION-confirmed override), named break
+schemes (SAVE/LOAD OPTION, snapshots stored NEXT TO the model file,
+strict-docPath active-option note driving the "Active scheme" label
+without dirtying the doc), and the `[OPTION: x]`/"(modified)" stamp on
+the sheet title + meta. Hardened by a 13-agent adversarial review — 9
+confirmed defects, all folded in (one superseded: strict guards made
+the empty-docPath leak inert). Headless suite 53 → 60 asserts, **ALL
+PASS in real Rhino 8**; builds 0/0. Also fixed in passing: IronPython
+file-lock hygiene (`with` on every break-sheet JSON read — unclosed
+.NET streams block deletes). Contract: `Formwork_Generation/CLAUDE.md`,
+"Break sheet P3". Still user-only: the manual overlay/options pass
+(toggle on real model, File>Open kill-switch, SAVE/LOAD round trip).
+
 **PR #18 MERGED to master** (`4fcd3a7`, 2026-08-19) - one big PR
 carrying audit batch-3 AND break-sheet P2 (same pattern as #17); the
 merged tree is byte-identical to the branch state all five headless
@@ -76,11 +95,11 @@ formwork/break-sheet flows (MAKE → draw → IMPORT → SPLIT on the real
 model) and the 30-second floor-staleness retest (edit a floor after
 Calculate, confirm exports disable).
 
-**Agreed next phases:** break-sheet P2 — DONE; audit batch-3 — DONE
-(see above; the 2026-08-15 audit is now fully dispositioned: 17+10
-fixed, 1+6 refuted). P3 (not started) = read-only conduit rendering of
-the breaks JSON in the live model, named Option-1/2 sheets. Grid-line
-furniture is deferred: the
+**Agreed next phases:** break-sheet P2, audit batch-3, break-sheet P3 —
+all DONE (the 2026-08-15 audit is fully dispositioned: 17+10 fixed, 1+6
+refuted). No further break-sheet phase is agreed; open backlog = issue
+#3 (Rhino 8 modernization, `net48;net8.0-windows` + yak), issues
+#15/#16 (documentation). Grid-line furniture is deferred: the
 user's grids come from imported PDF/DWG files with arbitrary layer names;
 the osnap-able slab outlines are the drawing reference for now (the
 import ADVISORY reads the optional `grid_x`/`grid_y` from the breaks

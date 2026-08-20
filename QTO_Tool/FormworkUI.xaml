@@ -58,6 +58,25 @@
                             <Button Name="ImportSheetButton" Content="IMPORT SHEET" Width="200" Height="52"
                                     FontSize="16" Margin="5" Click="ImportSheet_Clicked"/>
                         </StackPanel>
+                        <CheckBox Name="OverlayToggle" FontSize="14" Margin="5 10 5 0"
+                                  Content="Show the active breaks in the model (read-only overlay - nothing is added to the model file)"
+                                  Checked="OverlayToggle_Changed" Unchecked="OverlayToggle_Changed"/>
+                    </StackPanel>
+                </GroupBox>
+
+                <GroupBox Header="Break scheme options" Margin="10 0 10 10" Padding="12"
+                          BorderThickness="3" BorderBrush="Gray" FontSize="18">
+                    <StackPanel Orientation="Vertical">
+                        <TextBlock FontSize="14" TextWrapping="Wrap" Margin="0 0 0 6"
+                                   Text="Keep several break schemes side by side (Option-1, Option-2, ...) and switch between them. Options are saved NEXT TO the model file; loading one replaces the active breaks that Split, the sheet and the overlay all use."/>
+                        <TextBlock Name="ActiveOptionLabel" FontSize="15" FontWeight="DemiBold"
+                                   Margin="0 0 0 8" Text="Active scheme: (unnamed)"/>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <Button Name="SaveOptionButton" Content="SAVE AS OPTION" Width="200" Height="44"
+                                    FontSize="16" Margin="5" Click="SaveOption_Clicked"/>
+                            <Button Name="LoadOptionButton" Content="LOAD OPTION" Width="200" Height="44"
+                                    FontSize="16" Margin="5" Click="LoadOption_Clicked"/>
+                        </StackPanel>
                     </StackPanel>
                 </GroupBox>
 

@@ -60,6 +60,10 @@ META_FILE = os.environ.get("BS_META") or os.path.join(STAGE, "breaksheet.meta.js
 # P2: user-directed near-TYP merges, written by the FormworkUI merge dialog
 MERGE_FILE = os.environ.get("BS_MERGE") or os.path.join(
     STAGE, "breaksheet_merge.json")
+# P3: the active break-scheme note, written by FormworkUI at option
+# save/load - the sheet says WHICH scheme it draws, so two printed
+# option sheets can be told apart
+OPTION_FILE = os.path.join(STAGE, "breaks_active_option.json")
 LOG_FILE = os.path.join(STAGE, "breaksheet_log.txt")
 
 SLAB_KEYWORD = "slab"
@@ -310,7 +314,8 @@ def _read_merge_directives(doc, log):
     if not os.path.exists(MERGE_FILE):
         return []
     try:
-        data = json.loads(io.open(MERGE_FILE, encoding="utf-8").read())
+        with io.open(MERGE_FILE, encoding="utf-8") as fh:
+            data = json.loads(fh.read())
     except Exception as ex:
         log("WARNING: merge directive file unreadable ({0}) - no merges "
             "applied".format(ex))
@@ -450,7 +455,11 @@ def _existing_breaks(doc, log):
     if not os.path.exists(pb_json):
         return {}
     try:
-        data = json.loads(io.open(pb_json, encoding="utf-8").read())
+        # `with`, never a bare read: IronPython has no refcount collection
+        # and an unclosed .NET stream blocks a later DELETE of the JSON
+        # (rewrites share, deletes do not)
+        with io.open(pb_json, encoding="utf-8") as fh:
+            data = json.loads(fh.read())
         # The staging folder is machine-wide with one fixed file name: a
         # JSON left behind by ANOTHER project must not be drawn into this
         # sheet and re-imported with laundered provenance.
@@ -472,12 +481,65 @@ def _existing_breaks(doc, log):
         return {}
 
 
+def _active_option(doc, log):
+    """The active scheme's name for the sheet label, or None.
+
+    Same guards as every machine-wide staging artifact (shape, docPath);
+    when the breaks JSON changed since the note was written, the name is
+    provenance, not identity - say so on the sheet."""
+    if not os.path.exists(OPTION_FILE):
+        return None
+    try:
+        with io.open(OPTION_FILE, encoding="utf-8") as fh:
+            data = json.loads(fh.read())
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    src = data.get("docPath")
+    if not hasattr(src, "lower"):
+        src = ""
+    doc_path = doc.Path or ""
+    # STRICT equality (matches C# ReadActiveOption): the note writers
+    # refuse unsaved docs, so a real note always carries a path -
+    # empty-vs-non-empty is never a legitimate pairing here
+    if src.lower() != doc_path.lower():
+        return None
+    name = data.get("name")
+    if not name or not hasattr(name, "lower"):
+        return None
+    sha = data.get("sha")
+    if not hasattr(sha, "lower"):
+        sha = ""
+    # mirror the C# predicate exactly: a MISSING or unreadable breaks
+    # JSON hashes as "" and therefore reads as modified too - the name
+    # is provenance, not identity, the moment the bytes stop matching
+    if sha:
+        pb_json = os.environ.get("PB_JSON") or os.path.join(
+            STAGE, "pour_breaks_model.json")
+        actual = ""
+        if os.path.exists(pb_json):
+            try:
+                import hashlib
+                # `with`, not a bare read: IronPython has no refcount
+                # collection, and an unclosed .NET stream keeps the JSON
+                # locked until some later GC
+                with io.open(pb_json, "rb") as fh:
+                    actual = hashlib.sha256(fh.read()).hexdigest().upper()
+            except Exception:
+                actual = ""
+        if actual != sha.upper():
+            name = name + " (modified)"
+    log("active break scheme: {0}".format(name))
+    return name
+
+
 def _break_shape(entry):
     return (json.dumps(entry.get("polyline")), entry.get("curve_type"),
             entry.get("note") or "")
 
 
-def build_sheet(doc, groups, existing, log):
+def build_sheet(doc, groups, existing, log, option=None):
     """Construct the File3dm + meta dict. Returns (f3dm, meta)."""
     scale = _scale_from_m(doc)
     margin = MARGIN_M * scale
@@ -632,15 +694,18 @@ def build_sheet(doc, groups, existing, log):
             "offset": [_rnd(dx), _rnd(dy)],
         })
 
-    add_dot("BREAK SHEET - draw pour-break curves anywhere inside a cell "
-            "frame; a numbered text dot marks each pour region. Gray/black "
-            "geometry is locked context. Save this file, then IMPORT SHEET "
-            "in FormworkUI.", 0.0, margin * 0.5, li_label)
+    title = ("BREAK SHEET{0} - draw pour-break curves anywhere inside a "
+             "cell frame; a numbered text dot marks each pour region. "
+             "Gray/black geometry is locked context. Save this file, then "
+             "IMPORT SHEET in FormworkUI.".format(
+                 " [OPTION: {0}]".format(option) if option else ""))
+    add_dot(title, 0.0, margin * 0.5, li_label)
 
     meta = {
         "version": SCHEMA_VERSION,
         "docPath": doc.Path or "",
         "units": str(doc.ModelUnitSystem),
+        "option": option,
         "cells": meta_cells,
         "written": None,   # stamped by the caller-side C# if ever needed
     }
@@ -661,7 +726,8 @@ def main():
     groups = apply_merges(groups, _read_merge_directives(doc, log), log)
     near = near_typ_pairs(groups, log)
     existing = _existing_breaks(doc, log)
-    f3, meta = build_sheet(doc, groups, existing, log)
+    f3, meta = build_sheet(doc, groups, existing, log,
+                           option=_active_option(doc, log))
     # the FormworkUI merge dialog reads both: suggestions still open, and
     # the merges currently applied (so unchecking one un-merges it)
     meta["near_typ"] = near

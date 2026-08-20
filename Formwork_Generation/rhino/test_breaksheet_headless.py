@@ -168,7 +168,8 @@ def break_key(entry):
 
 
 def load_pb():
-    return json.loads(io.open(PB_JSON, encoding="utf-8").read())
+    with io.open(PB_JSON, encoding="utf-8") as fh:
+        return json.loads(fh.read())
 
 
 def count_by_layer(f3):
@@ -198,10 +199,12 @@ def main():
     doc.Strings.SetString("FloorElevations", json.dumps(
         {"3.2": "L01", "6.2": "L02", "9.2": "L03", "12.2": "L04"}))
     seed_json(doc)
-    # the staging folder is machine-wide: a merge directive left behind by
-    # an earlier run would regroup the FIRST make and break every count
+    # the staging folder is machine-wide: a merge directive or an active-
+    # option note left behind by an earlier run would change the FIRST make
     if os.path.exists(bsg.MERGE_FILE):
         os.remove(bsg.MERGE_FILE)
+    if os.path.exists(bsg.OPTION_FILE):
+        os.remove(bsg.OPTION_FILE)
 
     # ---- MAKE ----
     meta = bsg.main()
@@ -232,6 +235,8 @@ def main():
           ("L01", "L03") in pair_names, str(sorted(pair_names)))
     check("no merges applied yet", meta.get("merged") == [],
           str(meta.get("merged")))
+    check("no option stamped without a note (P3)",
+          meta.get("option") is None, str(meta.get("option")))
 
     f3 = Rhino.FileIO.File3dm.Read(bsg.SHEET_FILE)
     check("sheet readable", f3 is not None)
@@ -337,7 +342,8 @@ def main():
               got == [[6.0, -0.5], [6.0, 10.5]], str(got))
 
     # ---- straddling curve: loud total refusal, JSON untouched ----
-    before = io.open(PB_JSON, encoding="utf-8").read()
+    with io.open(PB_JSON, encoding="utf-8") as fh:
+        before = fh.read()
     f3 = Rhino.FileIO.File3dm.Read(bsg.SHEET_FILE)
     frames = [c["frame"] for c in cells]
     x_mid_a = (frames[0][0] + frames[0][2]) / 2.0
@@ -352,7 +358,8 @@ def main():
     check("straddler written", f3.Write(bsg.SHEET_FILE, 7))
     data = bsi.main()
     check("straddler refused", data is None)
-    after = io.open(PB_JSON, encoding="utf-8").read()
+    with io.open(PB_JSON, encoding="utf-8") as fh:
+        after = fh.read()
     check("JSON untouched on refusal", before == after)
 
     # ---- P2 merge directives: MAKE regenerates, so the straddler above
@@ -431,6 +438,43 @@ def main():
           meta.get("merged") == [["L01", "L02", "L03", "L04"]],
           str(None if meta is None else meta.get("merged")))
 
+    # ---- P3 option stamp: the sheet says WHICH scheme it draws ----
+    import hashlib
+    with io.open(PB_JSON, "rb") as fh:
+        sha = hashlib.sha256(fh.read()).hexdigest().upper()
+    with io.open(bsg.OPTION_FILE, "w", encoding="utf-8") as fh:
+        fh.write(u"{0}".format(json.dumps(
+            {"docPath": doc.Path or "", "name": "Option-A", "sha": sha})))
+    meta = bsg.main()
+    check("option stamped on the sheet meta", meta is not None and
+          meta.get("option") == "Option-A", str(meta and meta.get("option")))
+    # a breaks JSON that changed since the note was written is provenance,
+    # not identity - the sheet must say so
+    with io.open(bsg.OPTION_FILE, "w", encoding="utf-8") as fh:
+        fh.write(u"{0}".format(json.dumps(
+            {"docPath": doc.Path or "", "name": "Option-A",
+             "sha": "DEADBEEF"})))
+    meta = bsg.main()
+    check("stale option note stamped as modified", meta is not None and
+          meta.get("option") == "Option-A (modified)",
+          str(meta and meta.get("option")))
+    # a MISSING breaks JSON hashes as "" (the C# predicate) - still modified
+    with io.open(bsg.OPTION_FILE, "w", encoding="utf-8") as fh:
+        fh.write(u"{0}".format(json.dumps(
+            {"docPath": doc.Path or "", "name": "Option-A", "sha": sha})))
+    # belt and braces before the delete: any stray .NET read handle from
+    # earlier json loads (no refcounting under IronPython) blocks a
+    # DELETE even though rewrites shared fine
+    import System
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    os.remove(PB_JSON)
+    meta = bsg.main()
+    check("missing breaks JSON stamps as modified", meta is not None and
+          meta.get("option") == "Option-A (modified)",
+          str(meta and meta.get("option")))
+    os.remove(bsg.OPTION_FILE)
+
     # the MERGE REFUSED branch and the 15% threshold arm are structurally
     # unreachable with 4-vertex rectangles (max diff 8 == the hard floor),
     # so pin them with synthetic fingerprints: disjoint 64-vertex sets ->
@@ -458,11 +502,16 @@ if __name__ == "__main__":
         import traceback
         failures.append("unhandled exception")
         lines.append(traceback.format_exc())
-    # the staging folder is machine-wide: never leave a directive behind,
-    # even on a crashed run - a leaked merge file would regroup future
-    # MAKEs (and TEST_DOCPATH only protects SAVED models)
+    # the staging folder is machine-wide: never leave a directive or an
+    # option note behind, even on a crashed run - a leaked merge file
+    # would regroup future MAKEs (and TEST_DOCPATH only protects SAVED
+    # models); a leaked option note would mislabel future sheets
     try:
         os.remove(bsg.MERGE_FILE)
+    except OSError:
+        pass
+    try:
+        os.remove(bsg.OPTION_FILE)
     except OSError:
         pass
     lines.append("")

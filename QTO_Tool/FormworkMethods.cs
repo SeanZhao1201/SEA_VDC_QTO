@@ -345,6 +345,124 @@ namespace QTO_Tool
                 JsonConvert.SerializeObject(payload));
         }
 
+        // ── named break-scheme options (break sheet P3) ────────────────────
+        // A scheme is a snapshot of the breaks JSON. Options live NEXT TO
+        // THE MODEL FILE (<model>_breaks.<name>.json) - the staging folder
+        // is machine-wide with fixed names, and per-project schemes there
+        // would cross-contaminate. The active-option note is a staging
+        // sidecar (docPath + sha guarded) so it never dirties the document.
+        public const string ActiveOptionFile = "breaks_active_option.json";
+
+        static string OptionPrefix(RhinoDoc doc)
+        {
+            return Path.Combine(Path.GetDirectoryName(doc.Path),
+                Path.GetFileNameWithoutExtension(doc.Path) + "_breaks.");
+        }
+
+        public static string OptionFilePath(RhinoDoc doc, string name)
+        {
+            return OptionPrefix(doc) + name + ".json";
+        }
+
+        /// <summary>The single source of truth for what an option NAME may
+        /// be: trimmed, no invalid-filename characters, and no '.' - a dot
+        /// would split the "&lt;model&gt;_breaks.&lt;name&gt;.json" pattern, so
+        /// listing and saving must agree on rejecting it.</summary>
+        public static string SanitizeOptionName(string name)
+        {
+            name = (name ?? "").Trim();
+            foreach (char c in Path.GetInvalidFileNameChars())
+            {
+                name = name.Replace(c.ToString(), "");
+            }
+            return name.Replace(".", "");
+        }
+
+        /// <summary>Option names saved next to this model file, sorted.
+        /// Closed under the save-side name grammar: a dotted "name" (a
+        /// hand-renamed file, or ANOTHER model whose base name embeds this
+        /// one's option prefix) is not listed - loading it would round-trip
+        /// but SAVE would silently retarget a sanitized different file.</summary>
+        public static List<string> ListOptionNames(RhinoDoc doc)
+        {
+            List<string> names = new List<string>();
+            string prefix = OptionPrefix(doc);
+            foreach (string file in Directory.GetFiles(
+                Path.GetDirectoryName(doc.Path),
+                Path.GetFileName(prefix) + "*.json"))
+            {
+                string tail = Path.GetFileName(file).Substring(
+                    Path.GetFileName(prefix).Length);
+                string name = tail.Substring(0, tail.Length - ".json".Length);
+                if (name.Length > 0 && name == SanitizeOptionName(name))
+                {
+                    names.Add(name);
+                }
+            }
+            names.Sort(StringComparer.OrdinalIgnoreCase);
+            return names;
+        }
+
+        /// <summary>Record which option the active breaks JSON IS right now
+        /// (at save/load time) - name plus the JSON's sha, so any later
+        /// rewrite (harvest, import, another load) shows as "modified".</summary>
+        public static void WriteActiveOption(RhinoDoc doc, string name)
+        {
+            Dictionary<string, object> payload = new Dictionary<string, object>
+            {
+                { "docPath", doc.Path ?? "" },
+                { "name", name },
+                { "sha", BreaksJsonSha() },
+                { "written", DateTime.UtcNow.ToString("o") },
+            };
+            File.WriteAllText(Path.Combine(StagingDir, ActiveOptionFile),
+                JsonConvert.SerializeObject(payload));
+        }
+
+        /// <summary>The active option's name, "" when none applies to THIS
+        /// model file. modified = the breaks JSON changed since the note
+        /// was written (the name is then a provenance hint, not an
+        /// identity). Never throws - the sidecar is advisory display.</summary>
+        public static string ReadActiveOption(RhinoDoc doc, out bool modified)
+        {
+            modified = false;
+            try
+            {
+                string path = Path.Combine(StagingDir, ActiveOptionFile);
+                if (!File.Exists(path))
+                {
+                    return "";
+                }
+                Dictionary<string, object> data =
+                    JsonConvert.DeserializeObject<Dictionary<string, object>>(
+                        File.ReadAllText(path));
+                if (data == null || !data.ContainsKey("name"))
+                {
+                    return "";
+                }
+                string notePath = data.ContainsKey("docPath")
+                    ? (data["docPath"] as string ?? "") : "";
+                string docPath = (doc == null ? "" : doc.Path) ?? "";
+                // STRICT equality, unlike the lenient both-non-empty pattern
+                // elsewhere: the note writers refuse unsaved docs, so a real
+                // note always carries a path - an empty-vs-non-empty pair
+                // here means "someone else's note on my unsaved doc" (or
+                // vice versa), never a legitimate flow.
+                if (!string.Equals(notePath, docPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return "";
+                }
+                string sha = data.ContainsKey("sha") ? (data["sha"] as string ?? "") : "";
+                modified = sha.Length > 0 && sha != BreaksJsonSha();
+                return data["name"] as string ?? "";
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Active break-option note unreadable.", ex);
+                return "";
+            }
+        }
+
         /// <summary>The sheet meta's docPath, "" when absent or unreadable.
         /// The machine-wide staging folder means the sheet on disk may be
         /// another project's - every consumer must check.</summary>
@@ -461,7 +579,7 @@ namespace QTO_Tool
             };
         }
 
-        static string BreaksJsonSha()
+        public static string BreaksJsonSha()
         {
             string path = Path.Combine(StagingDir, BreaksJsonFile);
 

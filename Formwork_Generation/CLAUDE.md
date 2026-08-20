@@ -436,10 +436,54 @@ fixed pre-merge):**
   headless test's full-line fixed points keep the two in step). Advisory
   failures log one line and never block or alter what is written.
 
-Longer-term in-model rendering: a **read-only display conduit** of the
-current JSON remains the P3 target (no editor debt); the original
-GetPoint-authoring idea is superseded by the sheet. The layer path below
-remains the power-user back door feeding the same JSON.
+**Break sheet P3 (2026-08-19) — in-model rendering + named schemes,
+C#-side, pinned where Python is involved (60-assert headless suite):**
+
+- *Read-only overlay* (`QTO_Tool/PourBreakOverlay.cs`, a
+  `DisplayConduit` singleton): the ACTIVE breaks JSON drawn into the
+  live viewports — magenta polylines (lifted 0.02 m-equivalent off the
+  slab tops) + numbered pour dots — with ZERO objects added to the
+  model file, so REVERT CHECKUP is untouched and the checkup has
+  nothing to delete. No editor debt: the sheet and the `_POURBREAK`
+  layer stay the only authoring surfaces. Guards: whole-parse
+  try/catch (a shape-malformed JSON lands in the callers' false-branch,
+  never an unhandled dispatcher exception, never a partial draw);
+  docPath refusal for a foreign JSON — EXCEPT one the user explicitly
+  confirmed via LOAD OPTION (the active-option note for this doc with a
+  matching sha), which draws with a provenance warning in the summary;
+  a `RhinoDoc.CloseDocument` hook kills the conduit on File > Open/New
+  (registration is application-wide and would otherwise keep painting
+  model A's breaks into model B); FormworkUI's toggle resyncs on
+  Activated and the window's Closed event turns the overlay off.
+  Refresh sites: import success, harvest, option load, RE-CHECK.
+- *Named break schemes* (Option-1/2…): a scheme is a snapshot of the
+  breaks JSON stored NEXT TO the model file
+  (`<model>_breaks.<name>.json` — never in the machine-wide staging
+  folder). SAVE AS OPTION / LOAD OPTION in FormworkUI (Rhino-native
+  ShowEditBox/ShowListBox); unsaved docs are refused; LOAD confirms,
+  replaces the active JSON (the derived model then goes stale on its
+  own via the sidecar's breaksSha), and refreshes every gate. The
+  active-option note (`breaks_active_option.json` in staging:
+  docPath + name + sha, STRICT docPath equality on both C# and Python
+  sides) feeds the "Active scheme: X (modified since)" label without
+  ever dirtying the document. `FormworkMethods.SanitizeOptionName` is
+  the single name grammar - ListOptionNames is closed under it, so a
+  dotted file (hand-renamed, or another model whose base name embeds
+  this one's prefix) is never offered for a load that SAVE would
+  silently retarget.
+- *Option stamp on the sheet*: `breaksheet_gen` reads the note (same
+  shape/docPath guards; sha compare — a missing or changed JSON stamps
+  "(modified)", byte-matching the C# predicate) and labels the title
+  dot `[OPTION: x]` + `meta["option"]`, so two printed option sheets
+  can be told apart.
+- *IronPython file-lock hygiene*: every JSON read in the break-sheet
+  modules uses `with` — IronPython has no refcount collection, and an
+  unclosed .NET stream blocks a later DELETE of the file even though
+  rewrites merely share (found the day a test first deleted the JSON
+  mid-process).
+
+The original GetPoint-authoring idea stays superseded by the sheet. The
+layer path below remains the power-user back door feeding the same JSON.
 
 **Cut semantics v2:** a break is a **plan polyline — any orientation, jogs
 allowed** (routing around openings is normal practice); arbitrary planar curves

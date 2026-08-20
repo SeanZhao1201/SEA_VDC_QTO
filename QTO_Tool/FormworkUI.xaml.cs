@@ -45,8 +45,23 @@ namespace QTO_Tool
 
             // The sheet is drawn and saved in a SECOND Rhino, so the moment
             // the user alt-tabs back here is exactly when the dirty badge
-            // must already be current - three file stats, cheap enough.
-            this.Activated += (s, e) => RefreshSheetBadge();
+            // must already be current - three file stats, cheap enough. The
+            // checkbox also resyncs: a document switch turns the conduit
+            // off behind the UI's back (the CloseDocument hook).
+            this.Activated += (s, e) =>
+            {
+                RefreshSheetBadge();
+                if (this.OverlayToggle.IsChecked == true &&
+                    !PourBreakOverlay.Instance.Enabled)
+                {
+                    this.OverlayToggle.IsChecked = false;
+                }
+            };
+
+            // The overlay must never outlive its only switch: a closed
+            // window with a live conduit would leave breaks painted on the
+            // model with nothing to turn them off.
+            this.Closed += (s, e) => PourBreakOverlay.Instance.TurnOff(RhinoDoc.ActiveDoc);
         }
 
         private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -63,6 +78,9 @@ namespace QTO_Tool
             RefreshStamp();
             RefreshDerivedAvailability();
             RefreshSheetBadge();
+            RefreshActiveOptionLabel();
+            // a conduit left on by an earlier window shows here as checked
+            this.OverlayToggle.IsChecked = PourBreakOverlay.Instance.Enabled;
         }
 
         // A busy window must not close silently: the Cancel button is the
@@ -91,6 +109,71 @@ namespace QTO_Tool
             RefreshStamp();
             RefreshDerivedAvailability();
             RefreshSheetBadge();
+            RefreshActiveOptionLabel();
+            RefreshOverlay();
+        }
+
+        /// <summary>P3: the read-only overlay - the ACTIVE breaks JSON drawn
+        /// into the live viewports via a display conduit. Nothing is added
+        /// to the model file, so REVERT CHECKUP is unaffected and the
+        /// checkup has nothing to delete; editing stays on the sheet and
+        /// the _POURBREAK layer, which feed the same JSON.</summary>
+        private void OverlayToggle_Changed(object sender, RoutedEventArgs e)
+        {
+            if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
+            {
+                RunQTO.doc = RhinoDoc.ActiveDoc;
+            }
+            if (this.OverlayToggle.IsChecked == true)
+            {
+                string reason;
+                if (!PourBreakOverlay.Instance.Rebuild(RunQTO.doc, out reason))
+                {
+                    AppendLog("Overlay unavailable: " + reason);
+                    // unchecking re-enters this handler; TurnOff on a
+                    // disabled conduit is a no-op
+                    this.OverlayToggle.IsChecked = false;
+                    return;
+                }
+                PourBreakOverlay.Instance.Enabled = true;
+                RunQTO.doc.Views.Redraw();
+                AppendLog("Overlay ON: " + PourBreakOverlay.Instance.Summary);
+            }
+            else
+            {
+                PourBreakOverlay.Instance.TurnOff(RunQTO.doc);
+            }
+        }
+
+        /// <summary>Rebuild the overlay after anything rewrote the breaks
+        /// JSON (import, harvest, option load). No-op while it is off; a
+        /// JSON that stopped being drawable turns it off loudly.</summary>
+        private void RefreshOverlay()
+        {
+            if (this.OverlayToggle.IsChecked != true)
+            {
+                return;
+            }
+            string reason;
+            if (PourBreakOverlay.Instance.Rebuild(RunQTO.doc, out reason))
+            {
+                RunQTO.doc.Views.Redraw();
+                AppendLog("Overlay refreshed: " + PourBreakOverlay.Instance.Summary);
+            }
+            else
+            {
+                AppendLog("Overlay turned OFF: " + reason);
+                this.OverlayToggle.IsChecked = false;
+            }
+        }
+
+        private void RefreshActiveOptionLabel()
+        {
+            bool modified;
+            string name = FormworkMethods.ReadActiveOption(RunQTO.doc, out modified);
+            this.ActiveOptionLabel.Text = name.Length == 0
+                ? "Active scheme: (unnamed)"
+                : "Active scheme: " + name + (modified ? "  (modified since)" : "");
         }
 
         /// <summary>The dirty badge (P2): the sheet on disk was saved after
@@ -231,6 +314,8 @@ namespace QTO_Tool
             this.MakeSheetButton.IsEnabled = !busy;
             this.OpenSheetButton.IsEnabled = !busy;
             this.ImportSheetButton.IsEnabled = !busy;
+            this.SaveOptionButton.IsEnabled = !busy;
+            this.LoadOptionButton.IsEnabled = !busy;
             this.CancelRunButton.IsEnabled = busy;
             if (busy)
             {
@@ -566,8 +651,14 @@ namespace QTO_Tool
                     "the log above; the previous breaks JSON is unchanged.");
                 imported = false;
             }
-            // a changed breaks JSON makes any derived model stale - reflect it
+            // a changed breaks JSON makes any derived model stale - reflect
+            // it, along with the overlay and the active-option note
             RefreshDerivedAvailability();
+            RefreshActiveOptionLabel();
+            if (imported)
+            {
+                RefreshOverlay();
+            }
             return imported;
         }
 
@@ -630,6 +721,175 @@ namespace QTO_Tool
             RhinoApp.RunScript("_-RunPythonScript " + script, false);
             AppendLog("--- harvest ---");
             AppendLog(FormworkMethods.ReadLogTail("pour_breaks_model_log.txt", 30));
+            // harvest rewrote the active breaks JSON
+            RefreshActiveOptionLabel();
+            RefreshOverlay();
+        }
+
+        /// <summary>P3: snapshot the active breaks JSON as a named option
+        /// NEXT TO the model file - the machine-wide staging folder cannot
+        /// hold per-project schemes.</summary>
+        private void SaveOption_Clicked(object sender, RoutedEventArgs e)
+        {
+            if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
+            {
+                RunQTO.doc = RhinoDoc.ActiveDoc;
+            }
+            if (!File.Exists(BreaksJson))
+            {
+                MessageBox.Show("No breaks JSON yet - run HARVEST or IMPORT SHEET first.");
+                return;
+            }
+            string docPath = RunQTO.doc.Path ?? "";
+            if (docPath.Length == 0)
+            {
+                MessageBox.Show("Save the model file first - break options are " +
+                    "stored next to it.");
+                return;
+            }
+            bool modified;
+            string current = FormworkMethods.ReadActiveOption(RunQTO.doc, out modified);
+            string name = current.Length > 0 ? current : "Option-1";
+            if (!Rhino.UI.Dialogs.ShowEditBox("Save break option",
+                "Name for this break scheme:", name, false, out name))
+            {
+                return;
+            }
+            name = SanitizeOptionName(name);
+            if (name.Length == 0)
+            {
+                MessageBox.Show("The option name is empty (or held only characters " +
+                    "a file name cannot).");
+                return;
+            }
+            try
+            {
+                string path = FormworkMethods.OptionFilePath(RunQTO.doc, name);
+                if (File.Exists(path))
+                {
+                    MessageBoxResult confirm = MessageBox.Show(
+                        "Option '" + name + "' already exists (" +
+                        File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm") +
+                        "). Overwrite it?", "Overwrite option", MessageBoxButton.OKCancel);
+                    if (confirm != MessageBoxResult.OK)
+                    {
+                        return;
+                    }
+                }
+                File.Copy(BreaksJson, path, true);
+                // the copy IS the save: report it before anything else can
+                // fail, so a note hiccup cannot read as "nothing was saved"
+                AppendLog("Scheme saved as '" + name + "' -> " + path);
+                try
+                {
+                    FormworkMethods.WriteActiveOption(RunQTO.doc, name);
+                }
+                catch (Exception noteEx)
+                {
+                    Logger.Error("Active-scheme note could not be written.", noteEx);
+                    AppendLog("Scheme saved, but the active-scheme note could " +
+                        "not be written: " + noteEx.Message);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Saving the break option failed.", ex);
+                AppendLog("SAVE OPTION FAILED: " + ex.Message);
+                return;
+            }
+            RefreshActiveOptionLabel();
+        }
+
+        static string SanitizeOptionName(string name)
+        {
+            return FormworkMethods.SanitizeOptionName(name);
+        }
+
+        /// <summary>P3: swap a saved option in as the ACTIVE breaks JSON.
+        /// The derived model goes stale on its own (the sidecar's breaksSha
+        /// no longer matches), the sheet badge and the overlay re-check.</summary>
+        private void LoadOption_Clicked(object sender, RoutedEventArgs e)
+        {
+            if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
+            {
+                RunQTO.doc = RhinoDoc.ActiveDoc;
+            }
+            string docPath = RunQTO.doc.Path ?? "";
+            if (docPath.Length == 0)
+            {
+                MessageBox.Show("Save the model file first - break options are " +
+                    "stored next to it.");
+                return;
+            }
+            List<string> names;
+            try
+            {
+                names = FormworkMethods.ListOptionNames(RunQTO.doc);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Listing break options failed.", ex);
+                AppendLog("LOAD OPTION FAILED: " + ex.Message);
+                return;
+            }
+            if (names.Count == 0)
+            {
+                MessageBox.Show("No saved break options next to this model file. " +
+                    "SAVE AS OPTION creates one from the active breaks.");
+                return;
+            }
+            object picked = Rhino.UI.Dialogs.ShowListBox("Load break option",
+                "Loading REPLACES the active breaks (Split, the sheet and the " +
+                "overlay all use them). Save the current scheme as an option " +
+                "first if you want to keep it.", names);
+            if (picked == null)
+            {
+                return;
+            }
+            string name = picked.ToString();
+            bool loaded = false;
+            try
+            {
+                string path = FormworkMethods.OptionFilePath(RunQTO.doc, name);
+                // options live next to the model, but files travel: keep the
+                // same source.model gate as everything else in the pipeline
+                JObject data = JObject.Parse(File.ReadAllText(path));
+                string source = (string)data.SelectToken("source.model") ?? "";
+                if (source.Length > 0 &&
+                    !string.Equals(source, docPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    MessageBoxResult confirm = MessageBox.Show(
+                        "Option '" + name + "' was harvested from a DIFFERENT " +
+                        "model file:\n" + source + "\n\nLoad it anyway?",
+                        "Option from another model", MessageBoxButton.OKCancel);
+                    if (confirm != MessageBoxResult.OK)
+                    {
+                        return;
+                    }
+                }
+                File.Copy(path, BreaksJson, true);
+                // the copy IS the load: from here on the active breaks have
+                // changed and every gate must re-check, whatever else fails
+                loaded = true;
+                AppendLog("Scheme '" + name + "' loaded as the ACTIVE breaks.");
+                FormworkMethods.WriteActiveOption(RunQTO.doc, name);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Loading the break option failed.", ex);
+                AppendLog(loaded
+                    ? "Scheme loaded, but the active-scheme note could not be " +
+                      "written: " + ex.Message
+                    : "LOAD OPTION FAILED: " + ex.Message);
+                if (!loaded)
+                {
+                    return;
+                }
+            }
+            RefreshDerivedAvailability();
+            RefreshSheetBadge();
+            RefreshOverlay();
+            RefreshActiveOptionLabel();
         }
 
         private void Restore_Clicked(object sender, RoutedEventArgs e)

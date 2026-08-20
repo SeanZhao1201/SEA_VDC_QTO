@@ -75,8 +75,12 @@ namespace QTO_Tool
                     if (obj == null || obj.Attributes == null) { continue; }
                     Rhino.DocObjects.Layer layer = doc.Layers[obj.Attributes.LayerIndex];
                     string path = layer == null ? "" : (layer.FullPath ?? "");
-                    if (path.StartsWith(FormworkMethods.FormworkLayer, StringComparison.OrdinalIgnoreCase) ||
-                        path.StartsWith(FormworkMethods.PourBreakLayer, StringComparison.OrdinalIgnoreCase))
+                    // strict tree matcher, same exclusion set as the
+                    // formwork fingerprint: a sibling layer like
+                    // "_POURBREAK_OLD" holds real take-off solids and
+                    // belongs in the floor scan
+                    if (FormworkMethods.LayerInTree(path, FormworkMethods.FormworkLayer) ||
+                        FormworkMethods.LayerInTree(path, FormworkMethods.PourBreakLayer))
                     {
                         continue;
                     }

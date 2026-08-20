@@ -693,7 +693,11 @@ def split_document(doc, data, params=None, log=None):
                    "rep": interior_plan_point(pc, tol), "pour": None}
             rec_pieces.append(rec)
             floor_pieces.setdefault(fl, []).append(rec)
-        pending.append((obj, layer, fl, srec, rec_pieces))
+        # the source brep and its soffit area ride along: pass 3 deletes
+        # the original FIRST, so a failed piece-add needs the brep back to
+        # roll the slab uncut - and if even that fails, a0 comes off the
+        # floor total so the report cannot count vanished volume
+        pending.append((obj, layer, fl, srec, rec_pieces, brep, a0))
 
     # pass 2 — per-floor pour assignment (dot containment, then cells)
     for fl, pieces in floor_pieces.items():
@@ -715,7 +719,7 @@ def split_document(doc, data, params=None, log=None):
         return doc.Layers.Add(layer)
 
     n_cut = 0
-    for obj, layer, fl, srec, rec_pieces in pending:
+    for obj, layer, fl, srec, rec_pieces, src_brep, src_soffit in pending:
         frep = report["floors"][fl]
         # capture identity/attributes, then delete FIRST — a failed
         # delete (locked object/layer in the client model, preserved by
@@ -728,17 +732,60 @@ def split_document(doc, data, params=None, log=None):
             log("  ERROR: {0}/{1}: original slab could not be deleted — "
                 "pieces NOT added, slab left uncut".format(fl, layer.Name))
             continue
+
+        # Add every piece FIRST, checking each Guid: the original is
+        # already gone, so a piece AddBrep can silently return Guid.Empty
+        # and the derived model would lose that volume while the report
+        # (written from the in-memory pieces) still claimed a clean,
+        # conserving split. On any failure, roll the whole slab back.
+        added_ids = []
+        add_failed = False
         for rec in rec_pieces:
             pour = rec["pour"] if rec["pour"] is not None else 0
-            vm = rec["vm"]
-            a = soffit_area(rec["brep"], tol)
             attr = base_attr.Duplicate()
             attr.LayerIndex = pour_layer(layer, pour)
             attr.Mode = Rhino.DocObjects.ObjectMode.Normal
             attr.SetUserString("POUR", str(pour))
             attr.SetUserString("POUR_FLOOR", fl)
             attr.SetUserString("SOURCE_SLAB", source_id)
-            doc.Objects.AddBrep(rec["brep"], attr)
+            new_id = doc.Objects.AddBrep(rec["brep"], attr)
+            if new_id == System.Guid.Empty:
+                add_failed = True
+                break
+            added_ids.append(new_id)
+        if add_failed:
+            for aid in added_ids:
+                doc.Objects.Delete(aid, True)
+            restored = doc.Objects.AddBrep(src_brep, base_attr)
+            srec["add_failed"] = True
+            srec["pieces"] = []
+            if restored == System.Guid.Empty:
+                # the report is the engineer-facing truth: a slab that is
+                # GONE from the derived model must say so there, not only
+                # in a transient log line - and its soffit must come off
+                # the floor total or target_ratio counts vanished volume
+                srec["status"] = ("PIECE ADD FAILED — restore ALSO "
+                                  "failed, slab MISSING from derived "
+                                  "model")
+                srec["restore_failed"] = True
+                frep["total_soffit_area"] = round(
+                    frep["total_soffit_area"] - src_soffit, 1)
+            else:
+                srec["status"] = "PIECE ADD FAILED — slab restored uncut"
+            log("  ERROR: {0}/{1}: a split piece could not be added to the "
+                "derived model — pieces rolled back, original slab "
+                "re-added {2}".format(
+                    fl, layer.Name,
+                    "OK" if restored != System.Guid.Empty else
+                    "FAILED (slab MISSING — do NOT use this derived "
+                    "model)"))
+            continue
+
+        # bookkeeping only after every piece verifiably landed
+        for rec in rec_pieces:
+            pour = rec["pour"] if rec["pour"] is not None else 0
+            vm = rec["vm"]
+            a = soffit_area(rec["brep"], tol)
             prec = {"pour": pour,
                     "vol": round(vm.Volume, 1) if vm else None,
                     "area": round(a, 1),

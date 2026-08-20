@@ -473,6 +473,21 @@ blocked); offset to the nearest grid line (grid now optional); sliver/volume
 reversions surfaced with reasons. Iteration is cheap — draw, run headless on a
 staged copy, take the report to the engineer.
 
+**Batch-3 hardening (2026-08-19):** the layer-tree matchers tightened to
+the true `::` path separator on BOTH sides (`is_pb_layer` /
+`_is_formwork_layer` and the C# `FormworkMethods.LayerInTree` now agree
+byte-for-byte: a top-level layer literally named `_POURBREAK:X` is a
+name, not a sublayer); the splitter's pass 3 verifies every piece's
+`AddBrep` Guid — on a failure it deletes the added siblings, re-adds the
+ORIGINAL slab, and marks the report (`add_failed`, and `restore_failed`
++ soffit subtracted from the floor total when even the re-add fails), so
+the derived model can no longer silently lose volume under a clean
+report; and restore writes `pourbreak_restore_result.json`
+(added/floors_skipped counts) + saves its log in a `finally` — the
+FormworkUI handler judges the run by that file freshly appearing
+(pre-deleted, mtime-guarded) and surfaces skipped floors loudly instead
+of always claiming "Breaks re-drawn".
+
 **Hardened by a 30-agent adversarial review (2026-08-13, 18 confirmed
 defects, all fixed and covered by tests):** pour assignment is
 dot-containment first (a concave piece's volume centroid can land across the

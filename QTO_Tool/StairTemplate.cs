@@ -171,17 +171,7 @@ namespace QTO_Tool
             // from the take-off.
             if (this.upfacingFaces.Count == 0)
             {
-                // Quantities are silently reshaped here (tread count 0, riser
-                // 0, all vertical-ish area as side) - a field report about
-                // wrong stair numbers needs to see WHICH stairs degraded.
-                Logger.Warn("Stair " + this.id + " on layer '" + this.layerName +
-                    "' has no tread-like face; riser area set to 0 and all near-vertical " +
-                    "faces counted as side area.");
-
-                this.riserArea = 0;
-                this.sideFaceAreas.AddRange(this.sideAndRiserFaceAreas);
-                this.sideFaces.AddRange(this.sideAndRiserFaces);
-                this.sideArea = Math.Round(this.sideFaceAreas.Sum() * RunQTO.areaConversionFactor, 2);
+                DegradeToSideOnly("has no tread-like face");
                 return;
             }
 
@@ -197,11 +187,29 @@ namespace QTO_Tool
 
             offsetDistance *= 0.48;
 
-            Curve treadBoundary = Curve.JoinCurves(this.upfacingFaces[0].Edges)[0];
+            // JoinCurves and Offset both return null/empty on failure (a
+            // kinked or non-planar tread boundary under the 0.3 dot
+            // epsilon): degrade like the no-tread case instead of the index
+            // error dropping a valid stair from the take-off.
+            Curve[] joinedBoundary = Curve.JoinCurves(this.upfacingFaces[0].Edges);
+            if (joinedBoundary == null || joinedBoundary.Length == 0)
+            {
+                DegradeToSideOnly("has a tread boundary that could not be joined");
+                return;
+            }
+            Curve treadBoundary = joinedBoundary[0];
             treadBoundary = treadBoundary.Simplify(CurveSimplifyOptions.All, RunQTO.doc.ModelAbsoluteTolerance, RunQTO.doc.ModelAngleToleranceRadians) ?? treadBoundary;
 
-            Curve curveOffset1 = treadBoundary.Offset(Plane.WorldXY, offsetDistance, RunQTO.doc.ModelAbsoluteTolerance, CurveOffsetCornerStyle.Sharp)[0];
-            Curve curveOffset2 = treadBoundary.Offset(Plane.WorldXY, -offsetDistance, RunQTO.doc.ModelAbsoluteTolerance, CurveOffsetCornerStyle.Sharp)[0];
+            Curve[] offset1 = treadBoundary.Offset(Plane.WorldXY, offsetDistance, RunQTO.doc.ModelAbsoluteTolerance, CurveOffsetCornerStyle.Sharp);
+            Curve[] offset2 = treadBoundary.Offset(Plane.WorldXY, -offsetDistance, RunQTO.doc.ModelAbsoluteTolerance, CurveOffsetCornerStyle.Sharp);
+            if (offset1 == null || offset1.Length == 0 ||
+                offset2 == null || offset2.Length == 0)
+            {
+                DegradeToSideOnly("has a tread boundary whose offset failed");
+                return;
+            }
+            Curve curveOffset1 = offset1[0];
+            Curve curveOffset2 = offset2[0];
             List<Curve> shorterSegments = new List<Curve>();
             Curve[] curveOffsetSegments;
 
@@ -233,6 +241,16 @@ namespace QTO_Tool
                         shorterSegments.Add(curveOffsetSegments[i]);
                     }
                 }
+            }
+
+            // Two segments only TIE for shortest on a rectangular tread; a
+            // winder/tapered tread or a curved offset (one segment) leaves a
+            // single entry and [1] would throw.
+            if (shorterSegments.Count < 2)
+            {
+                DegradeToSideOnly("has no pair of equal shortest tread edges " +
+                    "(winder or tapered tread?)");
+                return;
             }
 
             Curve centerLine = new Line(shorterSegments[0].PointAtLength(shorterSegments[0].GetLength() / 2), shorterSegments[1].PointAtLength(shorterSegments[1].GetLength() / 2)).ToNurbsCurve();
@@ -271,6 +289,23 @@ namespace QTO_Tool
             }
 
             this.riserArea = Math.Round(this.riserFaceAreas.Sum() * RunQTO.areaConversionFactor, 2);
+            this.sideArea = Math.Round(this.sideFaceAreas.Sum() * RunQTO.areaConversionFactor, 2);
+        }
+
+        /// <summary>The flight centerline could not be derived (no tread,
+        /// unjoinable boundary, failed offset, no tied shortest edges):
+        /// riser area goes to 0 and every near-vertical face counts as side
+        /// area. Quantities are reshaped, not dropped - a field report about
+        /// wrong stair numbers needs to see WHICH stairs degraded and why.</summary>
+        private void DegradeToSideOnly(string why)
+        {
+            Logger.Warn("Stair " + this.id + " on layer '" + this.layerName +
+                "' " + why + "; riser area set to 0 and all near-vertical " +
+                "faces counted as side area.");
+
+            this.riserArea = 0;
+            this.sideFaceAreas.AddRange(this.sideAndRiserFaceAreas);
+            this.sideFaces.AddRange(this.sideAndRiserFaces);
             this.sideArea = Math.Round(this.sideFaceAreas.Sum() * RunQTO.areaConversionFactor, 2);
         }
     }

@@ -4,6 +4,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development status — 2026-08-19 (keep this section current when work lands)
 
+**Audit batch-3 COMPLETE on branch `fix/audit-batch-3`** (2026-08-19,
+stacked on `feat/breaksheet-p2`, local, not pushed). The 16 unverified
+2026-08-15 audit findings were adversarially verified (10-agent
+workflow): **10 confirmed and fixed, 6 refuted** (VolumeMassProperties
+guards — per-object catch already contains it; SET FLOOR red — fixed in
+batch 1.5; Excel zombie window, IfcStore dispose, =SUM degenerate,
+sideform panel_thickness — impact chains broken in current code). Fixed:
+gross-volume probe (both directions, wall-depth-bounded rays, null
+guards on CreatePlanarBreps/RemoveHoles — degrade to net, never drop the
+element), Blockify re-run name collisions (bump past existing
+definitions), StairTemplate `DegradeToSideOnly` at 4 failure points,
+layers added after Start Checkup now tallied + dialog, measured-zero
+exports as 0 not "-", `_FORMWORK`/`_POURBREAK` matchers split into
+strict-tree (`LayerInTree`, fingerprint/scan/harvest-parity sites,
+Python `::` tightened to match) vs gate-union (segment OR prefix — the
+destructive-checkup gate must stay at least as broad as every earlier
+build), Restore judged by a fresh `pourbreak_restore_result.json`
+(skipped floors loud), splitter pass-3 AddBrep Guid checks with full
+rollback + honest report. Its own 14-agent diff review confirmed 8
+follow-up defects, all folded in. Verified in real Rhino 8: formwork,
+sideforms, pourbreaks, golden Bellwether, breaksheet — **ALL PASS**;
+builds 0/0.
+
 **Break-sheet P2 COMPLETE on branch `feat/breaksheet-p2`** (2026-08-19,
 local, not pushed): near-TYP merge UI (`SheetMergeUI` dialog after MAKE →
 `breaksheet_merge.json` directives, union-fingerprint validation in file
@@ -45,10 +68,11 @@ formwork/break-sheet flows (MAKE → draw → IMPORT → SPLIT on the real
 model) and the 30-second floor-staleness retest (edit a floor after
 Calculate, confirm exports disable).
 
-**Agreed next phases:** break-sheet P2 — DONE (see above). P3 (not
-started) = read-only conduit rendering of the breaks JSON in the live
-model, named Option-1/2 sheets. Also queued: the 16 unverified audit
-findings as batch-3 candidates. Grid-line furniture is deferred: the
+**Agreed next phases:** break-sheet P2 — DONE; audit batch-3 — DONE
+(see above; the 2026-08-15 audit is now fully dispositioned: 17+10
+fixed, 1+6 refuted). P3 (not started) = read-only conduit rendering of
+the breaks JSON in the live model, named Option-1/2 sheets. Grid-line
+furniture is deferred: the
 user's grids come from imported PDF/DWG files with arbitrary layer names;
 the osnap-able slab outlines are the drawing reference for now (the
 import ADVISORY reads the optional `grid_x`/`grid_y` from the breaks

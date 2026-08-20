@@ -592,8 +592,10 @@ namespace QTO_Tool
                     if (obj == null || obj.Attributes == null) { continue; }
                     Rhino.DocObjects.Layer layer = RunQTO.doc.Layers[obj.Attributes.LayerIndex];
                     string path = layer == null ? "" : (layer.FullPath ?? "");
-                    if (path.StartsWith(FormworkMethods.PourBreakLayer,
-                        StringComparison.OrdinalIgnoreCase))
+                    // strict tree matcher: harvest walks exactly this tree,
+                    // so the two-truths dialog must not claim curves (e.g. on
+                    // "_POURBREAK_OLD") that harvest would never pick up
+                    if (FormworkMethods.LayerInTree(path, FormworkMethods.PourBreakLayer))
                     {
                         return true;
                     }
@@ -651,10 +653,64 @@ namespace QTO_Tool
             {
                 return;
             }
+            // Judge the run by what changed on disk, never by assumption:
+            // the driver calls main() directly (no __main__ error file),
+            // and a refused floor used to be invisible here - the UI said
+            // "re-drawn" while the ERROR sat on the Rhino command line.
+            string resultFile = Path.Combine(Stage, "pourbreak_restore_result.json");
+            try
+            {
+                if (File.Exists(resultFile)) { File.Delete(resultFile); }
+                // a stale log tail from a run that dies before main() must
+                // not present as this run's diagnostics either
+                string oldLog = Path.Combine(Stage, "pourbreak_restore_log.txt");
+                if (File.Exists(oldLog)) { File.Delete(oldLog); }
+            }
+            catch { }
+            // The delete can fail (lock): the mtime guard below keeps a
+            // stale result from masquerading as this run's outcome anyway.
+            DateTime? resultBefore = File.Exists(resultFile)
+                ? File.GetLastWriteTimeUtc(resultFile) : (DateTime?)null;
+
             string script = Path.Combine(Stage, "pb_gui_restore.py");
             RhinoApp.RunScript("_-RunPythonScript " + script, false);
             AppendLog("--- restore ---");
-            AppendLog("Breaks re-drawn from " + BreaksJson);
+            AppendLog(FormworkMethods.ReadLogTail("pourbreak_restore_log.txt", 30));
+
+            if (!File.Exists(resultFile) ||
+                (resultBefore != null &&
+                 File.GetLastWriteTimeUtc(resultFile) == resultBefore.Value))
+            {
+                Logger.Error("Restore did not write its result file - the run failed.", null);
+                AppendLog("RESTORE FAILED - nothing was verifiably re-drawn; " +
+                    "see the log above.");
+                return;
+            }
+            try
+            {
+                JObject result = JObject.Parse(File.ReadAllText(resultFile));
+                int added = (int?)result["added"] ?? 0;
+                int skipped = (int?)result["floors_skipped"] ?? 0;
+                if (skipped > 0)
+                {
+                    Logger.Warn("Restore skipped " + skipped + " floor(s) - " +
+                        "their breaks were NOT re-drawn.");
+                    AppendLog("RESTORE INCOMPLETE: " + skipped + " floor(s) were " +
+                        "SKIPPED (not in this model file's floor table) - their " +
+                        "breaks are NOT re-drawn. " + added + " object(s) added.");
+                }
+                else
+                {
+                    AppendLog("Breaks re-drawn from " + BreaksJson + " (" +
+                        added + " object(s) added).");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Restore result file unreadable.", ex);
+                AppendLog("Restore result unreadable (" + ex.Message +
+                    ") - check the log above before trusting the restore.");
+            }
         }
 
         private void Split_Clicked(object sender, RoutedEventArgs e)

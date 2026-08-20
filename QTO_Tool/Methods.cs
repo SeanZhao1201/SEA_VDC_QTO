@@ -1027,6 +1027,16 @@ namespace QTO_Tool
 
                     string blockObjectName = LayerParentsPath(layer) + layer.Name + "_" + objectIndex.ToString();
 
+                    // Re-runs restart objectIndex at 0 while the first run's
+                    // definitions persist; a colliding name makes
+                    // InstanceDefinitions.Add return -1 and the object stays
+                    // loose. Bump past existing definitions instead.
+                    while (RunQTO.doc.InstanceDefinitions.Find(blockObjectName) != null)
+                    {
+                        objectIndex++;
+                        blockObjectName = LayerParentsPath(layer) + layer.Name + "_" + objectIndex.ToString();
+                    }
+
                     // Duplicate the original geometry
                     GeometryBase geom = obj.Geometry.Duplicate();
 
@@ -1116,8 +1126,18 @@ namespace QTO_Tool
 
                     Curve innerLoopCurve = loop.To3dCurve();
 
-                    Brep innerLoopBrep = Brep.CreatePlanarBreps(innerLoopCurve, RunQTO.doc.ModelAbsoluteTolerance)[0];
-                    Surface innerLoopSurface = innerLoopBrep.Surfaces[0];
+                    // CreatePlanarBreps returns null for a non-planar loop
+                    // (a penetration through a curved ramp slab): keep that
+                    // hole as-is instead of the NRE dropping the whole
+                    // element from the take-off as "bad geometry".
+                    Brep[] innerLoopBreps = Brep.CreatePlanarBreps(innerLoopCurve, RunQTO.doc.ModelAbsoluteTolerance);
+                    if (innerLoopBreps == null || innerLoopBreps.Length == 0)
+                    {
+                        Logger.Warn("Gross volume: an inner loop is not planar; " +
+                            "that opening was kept as-is.");
+                        continue;
+                    }
+                    Surface innerLoopSurface = innerLoopBreps[0].Surfaces[0];
 
                     Point3d centroid = innerLoopSurface.PointAt(
                         innerLoopSurface.Domain(0).Min + (innerLoopSurface.Domain(0).Max - innerLoopSurface.Domain(0).Min) * 0.02,
@@ -1126,28 +1146,108 @@ namespace QTO_Tool
                     Vector3d normal = innerLoopSurface.NormalAt(innerLoopSurface.Domain(0).Mid, innerLoopSurface.Domain(1).Mid);
                     normal.Unitize();
 
-                    // Create a line representing the ray for the intersection test
-                    Line normalLine_1 = new Line(centroid, normal * 1000);
-                    Line normalLine_2 = new Line(centroid, normal * -1000);
-
-                    LineCurve normalCurve = new List<LineCurve> { new LineCurve(normalLine_1), new LineCurve(normalLine_2) }[0];
-
-                    Curve[] overlapCurves;
-                    Point3d[] intersectionPoints;
-                    bool intersect = Rhino.Geometry.Intersect.Intersection.CurveBrep(normalCurve, brep, RunQTO.doc.ModelAbsoluteTolerance, out overlapCurves, out intersectionPoints);
-
-                    if (intersect && intersectionPoints.Length == 0)
+                    double ExtentAlongNormal(BoundingBox box)
                     {
-                        // If there is an intersection, mark this inner loop for removal
-                        brepInnerLoopsToRemove.Add(loop);
-                        brepInnerLoopsToRemoveIndices.Add(loop.ComponentIndex());
+                        double min = double.MaxValue;
+                        double max = double.MinValue;
+                        foreach (Point3d corner in box.GetCorners())
+                        {
+                            double t = (corner - centroid) * normal;
+                            if (t < min) { min = t; }
+                            if (t > max) { max = t; }
+                        }
+                        return max - min;
                     }
+
+                    // Bound the probe by the hole's own wall depth: a blind
+                    // recess's floor lies within it, while an overhanging
+                    // plate of the SAME solid (split-level slab, landing
+                    // plate over a stair opening) lies a story away - an
+                    // unbounded ray would classify that real through-opening
+                    // as a recess and silently degrade gross to net.
+                    double probeDepth = 0.0;
+                    foreach (BrepTrim trim in loop.Trims)
+                    {
+                        if (trim.Edge == null)
+                        {
+                            continue;
+                        }
+                        foreach (int faceIndex in trim.Edge.AdjacentFaces())
+                        {
+                            if (faceIndex == loop.Face.FaceIndex)
+                            {
+                                continue;
+                            }
+                            probeDepth = Math.Max(probeDepth,
+                                ExtentAlongNormal(brep.Faces[faceIndex].GetBoundingBox(true)));
+                        }
+                    }
+                    if (probeDepth <= 0.0)
+                    {
+                        // no wall face resolved: the solid's own extent along
+                        // the normal (the flat-slab thickness) is the bound
+                        probeDepth = ExtentAlongNormal(brep.GetBoundingBox(true));
+                    }
+                    probeDepth += 10.0 * RunQTO.doc.ModelAbsoluteTolerance;
+
+                    // Probe BOTH directions: the planar cap's normal follows
+                    // the loop's curve direction, so a one-sided test made
+                    // the opening-vs-recess verdict depend on modeling
+                    // direction (the same geometry mirrored gave a different
+                    // gross volume). A loop counts as a fillable
+                    // through-opening only when BOTH rays verifiably miss
+                    // the solid - an intersector failure keeps the hole
+                    // (filling on failure would be the aggressive branch).
+                    bool hitsSolid = false;
+                    bool probeFailed = false;
+                    foreach (Vector3d direction in new Vector3d[] { normal * probeDepth, normal * -probeDepth })
+                    {
+                        LineCurve probe = new LineCurve(new Line(centroid, direction));
+                        Curve[] overlapCurves;
+                        Point3d[] intersectionPoints;
+                        bool intersect = Rhino.Geometry.Intersect.Intersection.CurveBrep(
+                            probe, brep, RunQTO.doc.ModelAbsoluteTolerance,
+                            out overlapCurves, out intersectionPoints);
+                        if (!intersect)
+                        {
+                            probeFailed = true;
+                            continue;
+                        }
+                        if (intersectionPoints.Length > 0 ||
+                            (overlapCurves != null && overlapCurves.Length > 0))
+                        {
+                            hitsSolid = true;
+                            break;
+                        }
+                    }
+
+                    if (hitsSolid)
+                    {
+                        continue;
+                    }
+                    if (probeFailed)
+                    {
+                        Logger.Warn("Gross volume: the opening probe failed; " +
+                            "that opening was kept as-is.");
+                        continue;
+                    }
+                    brepInnerLoopsToRemove.Add(loop);
+                    brepInnerLoopsToRemoveIndices.Add(loop.ComponentIndex());
                 }
             }
 
             if (brepInnerLoopsToRemoveIndices.Count > 0)
             {
                 Brep newBrep = brep.RemoveHoles(brepInnerLoopsToRemoveIndices, RunQTO.doc.ModelAbsoluteTolerance);
+
+                // RemoveHoles returns null on failure: gross degrades to net
+                // instead of the element dropping out of the export.
+                if (newBrep == null)
+                {
+                    Logger.Warn("Gross volume: RemoveHoles failed; the net " +
+                        "volume is used as gross for this element.");
+                    return brep.GetVolume();
+                }
 
                 return newBrep.GetVolume();
             }

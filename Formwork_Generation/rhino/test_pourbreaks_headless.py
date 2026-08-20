@@ -285,10 +285,10 @@ def main():
     n_wiped = pbr.wipe_pourbreaks(doc, rlog)
     check("wipe removed the authored objects", n_wiped == N_PB,
           "wiped {0}, want {1}".format(n_wiped, N_PB))
-    n_restored = pbr.restore_document(doc, h1, rlog)
+    n_restored, n_skipped = pbr.restore_document(doc, h1, rlog)
     lines.extend(rlog.lines)
-    check("restore re-added them", n_restored == N_PB,
-          "restored {0}".format(n_restored))
+    check("restore re-added them", n_restored == N_PB and n_skipped == 0,
+          "restored {0}, skipped {1}".format(n_restored, n_skipped))
     h2 = pbh.harvest_document(doc, fw.Log())
     check("harvest -> wipe -> restore -> harvest is identical",
           json.dumps(scrub(h1), sort_keys=True) ==
@@ -305,9 +305,10 @@ def main():
         "pour_markers": [], "target_area": None}}}
     n0 = count_objects(doc)
     glog = fw.Log()
-    n_ghost = pbr.restore_document(doc, ghost, glog)
+    n_ghost, n_ghost_skipped = pbr.restore_document(doc, ghost, glog)
     lines.extend(glog.lines)
     check("unknown floor: nothing restored", n_ghost == 0)
+    check("unknown floor: reported as skipped (F13)", n_ghost_skipped == 1)
     check("unknown floor: document untouched", count_objects(doc) == n0)
 
     # ---- unit-mismatch guard ----

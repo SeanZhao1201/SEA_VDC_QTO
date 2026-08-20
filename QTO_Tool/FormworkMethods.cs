@@ -27,6 +27,38 @@ namespace QTO_Tool
         public const string FormworkLayer = "_FORMWORK";
         public const string PourBreakLayer = "_POURBREAK";
 
+        /// <summary>The strict TREE matcher: the layer IS the root or is
+        /// nested under it. Mirrors pourbreak_harvest.is_pb_layer, so C# and
+        /// the Python engines agree on what the _FORMWORK/_POURBREAK trees
+        /// are - a sibling like "_POURBREAK_OLD" is NOT in the tree (a raw
+        /// prefix test wrongly excluded its real take-off solids from the
+        /// freshness fingerprint and promised harvest coverage the strict
+        /// Python walker never delivers).</summary>
+        public static bool LayerInTree(string fullPath, string root)
+        {
+            string path = fullPath ?? "";
+            return path.Equals(root, StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith(root + "::", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>The broad matcher for the destructive-checkup safety
+        /// gate: ANY path segment equals the root, so a "_FORMWORK" layer
+        /// dragged under a parent ("TEMP::_FORMWORK") still trips the gate.
+        /// Over-matching is the safe direction there - the checkup deletes
+        /// every object in the model file.</summary>
+        public static bool LayerHasSegment(string fullPath, string root)
+        {
+            foreach (string segment in (fullPath ?? "").Split(
+                new string[] { "::" }, StringSplitOptions.None))
+            {
+                if (segment.Equals(root, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         // The staging contract shared with Formwork_Generation/rhino: the
         // scripts hardcode %LOCALAPPDATA%\qto_fw_test as their import root
         // and output folder, so the GUI stages there too. Space-free by
@@ -170,8 +202,8 @@ namespace QTO_Tool
                     if (obj == null || obj.Attributes == null) { continue; }
                     Layer layer = doc.Layers[obj.Attributes.LayerIndex];
                     string path = layer == null ? "" : (layer.FullPath ?? "");
-                    if (path.StartsWith(FormworkLayer, StringComparison.OrdinalIgnoreCase) ||
-                        path.StartsWith(PourBreakLayer, StringComparison.OrdinalIgnoreCase))
+                    if (LayerInTree(path, FormworkLayer) ||
+                        LayerInTree(path, PourBreakLayer))
                     {
                         continue;
                     }
@@ -558,7 +590,13 @@ namespace QTO_Tool
                 if (obj == null || obj.Attributes == null) { continue; }
                 Layer layer = doc.Layers[obj.Attributes.LayerIndex];
                 string path = layer == null ? "" : (layer.FullPath ?? "");
-                if (path.StartsWith(FormworkLayer, StringComparison.OrdinalIgnoreCase))
+                // UNION of both matchers - this is a safety gate for a
+                // destructive operation, so it must be at least as broad as
+                // every earlier build: the segment match catches a nested
+                // "TEMP::_FORMWORK", the prefix match keeps catching the
+                // "_FORMWORK_OLD" sibling renames users actually make.
+                if (LayerHasSegment(path, FormworkLayer) ||
+                    path.StartsWith(FormworkLayer, StringComparison.OrdinalIgnoreCase))
                 {
                     return true;
                 }

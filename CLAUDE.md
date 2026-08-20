@@ -4,10 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development status — 2026-08-19 (keep this section current when work lands)
 
-**Audit batch-3 COMPLETE on branch `fix/audit-batch-3`** (2026-08-19,
-stacked on `feat/breaksheet-p2`; **PR #18**, open, carries BOTH bodies
-of work below plus this file's status commits - one big PR by the
-user's choice, same pattern as #17). The 16 unverified
+**PR #18 MERGED to master** (`4fcd3a7`, 2026-08-19) - one big PR
+carrying audit batch-3 AND break-sheet P2 (same pattern as #17); the
+merged tree is byte-identical to the branch state all five headless
+suites passed on, so no post-merge re-run was needed. Still user-only
+(the PR body's checklist): the manual P2 flow pass (MAKE → merge dialog
+→ draw → badge → Split auto-import), a gross-volume spot check on a
+slab with an opening (batch-3 changed the probe semantics), and the
+30-second floor-staleness retest.
+
+**Audit batch-3** (2026-08-19, landed in PR #18). The 16 unverified
 2026-08-15 audit findings were adversarially verified (10-agent
 workflow): **10 confirmed and fixed, 6 refuted** (VolumeMassProperties
 guards — per-object catch already contains it; SET FLOOR red — fixed in

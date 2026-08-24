@@ -19,6 +19,7 @@ using Xbim.Ifc4.PresentationOrganizationResource;
 using Xbim.Ifc4.ProductExtension;
 using Xbim.Ifc4.ProfileResource;
 using Xbim.Ifc4.PropertyResource;
+using Xbim.Ifc4.UtilityResource;
 using Xbim.Ifc4.RepresentationResource;
 using Xbim.Ifc4.SharedBldgElements;
 using Xbim.Ifc4.StructuralElementsDomain;
@@ -488,6 +489,134 @@ namespace QTO_Tool
             return buildingElements;
         }
 
+        /// <summary>Derive the element's IfcGlobalId from its Rhino object id.
+        ///
+        /// xBIM mints a RANDOM GlobalId per element per export, so every re-export
+        /// re-identified all ~2900 elements and broke any 4D task link built against
+        /// the previous file (Mast4D, 2026-08-20). The Rhino object id is already the
+        /// stable identity of the source solid - every template keeps it - and the
+        /// standard IFC base64 compression of it is byte-for-byte what ifcopenshell's
+        /// guid.compress() produces on this xBIM build (verified 2026-08-20 across
+        /// four vectors including all-zero and all-F), so the formwork exporter can
+        /// address the same element without sharing a line of code.
+        ///
+        /// One-time consequence, accepted deliberately: the first export after this
+        /// change re-identifies every element once; from then on the ids are stable.
+        ///
+        /// Never throws. An unusable id leaves xBIM's random one - no worse than the
+        /// previous behaviour - and says so in the log rather than silently.</summary>
+        private static void SetDeterministicGlobalId(IfcRoot element, string rhinoObjectId)
+        {
+            if (element == null || string.IsNullOrWhiteSpace(rhinoObjectId))
+                return;
+
+            try
+            {
+                Guid id;
+                if (!Guid.TryParse(rhinoObjectId, out id) || id == Guid.Empty)
+                {
+                    Logger.Warn("IFC: '" + rhinoObjectId + "' is not a usable Rhino object id - keeping the generated GlobalId.");
+                    return;
+                }
+
+                element.GlobalId = IfcGloballyUniqueId.ConvertToBase64(id);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("IFC: could not derive a stable GlobalId from '" + rhinoObjectId + "' - " + ex.Message);
+            }
+        }
+
+        /// <summary>State the units the QTO property VALUES are actually in.
+        ///
+        /// They are not the units the IFC header declares, and that is not a schema
+        /// violation: IfcReal carries no unit, so "GROSS VOLUME = 203.57" makes no
+        /// unit claim at all. It also gives a reader no way to learn the number is
+        /// cubic yards - which it is on every ft/in model
+        /// (Methods.SetVolumeConversionFactor, SetAreaConversionFactor,
+        /// SetLengthConversionFactor). Baking the unit into the property NAME was
+        /// rejected: the name would then differ between an imperial and a metric
+        /// project and break any consumer matching on names. The units get their own
+        /// set instead, per element so it survives federation and re-export
+        /// (asked for by Mast4D, 2026-08-20).</summary>
+        private static void AttachQtoUnitsPropertySet(IfcStore model, IfcObjectDefinition element)
+        {
+            string modelUnit = "";
+            try
+            {
+                if (RunQTO.doc != null && RunQTO.doc.IsAvailable)
+                    modelUnit = RunQTO.doc.GetUnitSystemName(true, true, true, true) ?? "";
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("IFC: could not read the model unit system for the QTO Units pset - " + ex.Message);
+            }
+
+            bool imperial = modelUnit == "ft" || modelUnit == "in";
+            string volumeUnit = imperial ? "CY" : (modelUnit.Length > 0 ? modelUnit + "3" : "model");
+            string areaUnit = modelUnit == "in" ? "ft2" : (modelUnit.Length > 0 ? modelUnit + "2" : "model");
+            string lengthUnit = modelUnit == "in" ? "ft" : (modelUnit.Length > 0 ? modelUnit : "model");
+
+            model.Instances.New<IfcRelDefinesByProperties>(rel =>
+            {
+                rel.RelatedObjects.Add(element);
+
+                rel.RelatingPropertyDefinition = model.Instances.New<IfcPropertySet>(pset =>
+                {
+                    pset.Name = "QTO Units";
+
+                    pset.HasProperties.AddRange(new[] {
+                        model.Instances.New<IfcPropertySingleValue>(p =>
+                        {
+                            p.Name = "VOLUME";
+                            p.NominalValue = new IfcText(volumeUnit);
+                        }),
+                        model.Instances.New<IfcPropertySingleValue>(p =>
+                        {
+                            p.Name = "AREA";
+                            p.NominalValue = new IfcText(areaUnit);
+                        }),
+                        model.Instances.New<IfcPropertySingleValue>(p =>
+                        {
+                            p.Name = "LENGTH";
+                            p.NominalValue = new IfcText(lengthUnit);
+                        })
+                    });
+                });
+            });
+        }
+
+        /// <summary>Mirror the pour-break splitter's POUR / POUR_FLOOR user strings
+        /// into the element's own "QTO Properties" set.
+        ///
+        /// They already reach the IFC verbatim in "QTO Attributes", but the concept
+        /// would then live on two different property paths - "QTO Attributes".POUR on
+        /// the deck, "QTO Properties".POUR on every formwork element - and each
+        /// downstream consumer would have to branch by family to find it. Same source
+        /// strings either way, so there is still exactly one source of truth; only
+        /// written when the splitter actually set them.</summary>
+        private static void AddPourProperties(IfcStore model, IfcPropertySet pset, Dictionary<string, string> attributeUserStrings)
+        {
+            if (attributeUserStrings == null || pset == null)
+                return;
+
+            foreach (string key in new[] { "POUR", "POUR_FLOOR" })
+            {
+                string value;
+                if (!attributeUserStrings.TryGetValue(key, out value))
+                    continue;
+                if (string.IsNullOrWhiteSpace(value))
+                    continue;
+
+                string captured = value;
+                pset.HasProperties.Add(model.Instances.New<IfcPropertySingleValue>(p =>
+                {
+                    p.Name = key;
+                    p.NominalValue = new IfcText(captured);
+                }));
+            }
+        }
+
         private static void AttachQtoAttributesPropertySet(IfcStore model, IfcObjectDefinition element, Dictionary<string, string> attributeUserStrings)
         {
             if (attributeUserStrings == null || attributeUserStrings.Count == 0)
@@ -522,6 +651,7 @@ namespace QTO_Tool
         {
             var wall = model.Instances.New<IfcWall>();
             wall.Name = wallTemplate.nameAbb;
+            SetDeterministicGlobalId(wall, wallTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -589,6 +719,8 @@ namespace QTO_Tool
 
             AttachQtoAttributesPropertySet(model, wall, wallTemplate.AttributeUserStrings);
 
+            AttachQtoUnitsPropertySet(model, wall);
+
             wall.PredefinedType = IfcWallTypeEnum.STANDARD;
 
             IFCMethods.ApplyRepresentationAndPlacement(model, wall, shape, insertPlane);
@@ -600,6 +732,7 @@ namespace QTO_Tool
         {
             var beam = model.Instances.New<IfcBeam>();
             beam.Name = beamTemplate.nameAbb;
+            SetDeterministicGlobalId(beam, beamTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -667,6 +800,8 @@ namespace QTO_Tool
 
             AttachQtoAttributesPropertySet(model, beam, beamTemplate.AttributeUserStrings);
 
+            AttachQtoUnitsPropertySet(model, beam);
+
             beam.PredefinedType = IfcBeamTypeEnum.BEAM;
 
             IFCMethods.ApplyRepresentationAndPlacement(model, beam, shape, insertPlane);
@@ -678,6 +813,7 @@ namespace QTO_Tool
         {
             var column = model.Instances.New<IfcColumn>();
             column.Name = columnTemplate.nameAbb;
+            SetDeterministicGlobalId(column, columnTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -720,6 +856,8 @@ namespace QTO_Tool
 
             AttachQtoAttributesPropertySet(model, column, columnTemplate.AttributeUserStrings);
 
+            AttachQtoUnitsPropertySet(model, column);
+
             column.PredefinedType = IfcColumnTypeEnum.COLUMN;
 
             IFCMethods.ApplyRepresentationAndPlacement(model, column, shape, insertPlane);
@@ -731,6 +869,7 @@ namespace QTO_Tool
         {
             var curb = model.Instances.New<IfcWall>();
             curb.Name = curbTemplate.nameAbb;
+            SetDeterministicGlobalId(curb, curbTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -798,6 +937,8 @@ namespace QTO_Tool
 
             AttachQtoAttributesPropertySet(model, curb, curbTemplate.AttributeUserStrings);
 
+            AttachQtoUnitsPropertySet(model, curb);
+
             curb.PredefinedType = IfcWallTypeEnum.STANDARD;
 
             IFCMethods.ApplyRepresentationAndPlacement(model, curb, shape, insertPlane);
@@ -809,6 +950,7 @@ namespace QTO_Tool
         {
             var footing = model.Instances.New<IfcFooting>();
             footing.Name = footingTemplate.nameAbb;
+            SetDeterministicGlobalId(footing, footingTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -856,6 +998,8 @@ namespace QTO_Tool
 
             AttachQtoAttributesPropertySet(model, footing, footingTemplate.AttributeUserStrings);
 
+            AttachQtoUnitsPropertySet(model, footing);
+
             footing.PredefinedType = IfcFootingTypeEnum.PAD_FOOTING;
 
             IFCMethods.ApplyRepresentationAndPlacement(model, footing, shape, insertPlane);
@@ -867,6 +1011,7 @@ namespace QTO_Tool
         {
             var continuousFooting = model.Instances.New<IfcFooting>();
             continuousFooting.Name = continuousFootingTemplate.nameAbb;
+            SetDeterministicGlobalId(continuousFooting, continuousFootingTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -939,6 +1084,8 @@ namespace QTO_Tool
 
             AttachQtoAttributesPropertySet(model, continuousFooting, continuousFootingTemplate.AttributeUserStrings);
 
+            AttachQtoUnitsPropertySet(model, continuousFooting);
+
             continuousFooting.PredefinedType = IfcFootingTypeEnum.STRIP_FOOTING;
 
             IFCMethods.ApplyRepresentationAndPlacement(model, continuousFooting, shape, insertPlane);
@@ -950,6 +1097,7 @@ namespace QTO_Tool
         {
             var slab = model.Instances.New<IfcSlab>();
             slab.Name = slabTemplate.nameAbb;
+            SetDeterministicGlobalId(slab, slabTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -1007,10 +1155,21 @@ namespace QTO_Tool
                         p.NominalValue = new IfcReal(Math.Round(slabTemplate.openingPerimeter, 2));
                     })
                     });
+
+                    // The deck is the only pour-split family, and its pour has to be
+                    // readable on the SAME property path as the formwork's -
+                    // "QTO Properties".POUR. It also reaches the file as a raw Rhino
+                    // user string in "QTO Attributes", and that stays; but a 4D
+                    // consumer that binds geometry to schedule tasks by property
+                    // EQUALITY should not have to branch on which family it is
+                    // looking at (Mast4D, 2026-08-20).
+                    AddPourProperties(model, pset, slabTemplate.AttributeUserStrings);
                 });
             });
 
             AttachQtoAttributesPropertySet(model, slab, slabTemplate.AttributeUserStrings);
+
+            AttachQtoUnitsPropertySet(model, slab);
 
             slab.PredefinedType = IfcSlabTypeEnum.FLOOR;
 
@@ -1023,6 +1182,7 @@ namespace QTO_Tool
         {
             var styrofoam = model.Instances.New<IfcSlab>();
             styrofoam.Name = styrofoamTemplate.nameAbb;
+            SetDeterministicGlobalId(styrofoam, styrofoamTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -1055,6 +1215,8 @@ namespace QTO_Tool
 
             AttachQtoAttributesPropertySet(model, styrofoam, styrofoamTemplate.AttributeUserStrings);
 
+            AttachQtoUnitsPropertySet(model, styrofoam);
+
             styrofoam.PredefinedType = IfcSlabTypeEnum.NOTDEFINED;
 
             IFCMethods.ApplyRepresentationAndPlacement(model, styrofoam, shape, insertPlane);
@@ -1066,6 +1228,7 @@ namespace QTO_Tool
         {
             var stair = model.Instances.New<IfcStair>();
             stair.Name = stairTemplate.nameAbb;
+            SetDeterministicGlobalId(stair, stairTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -1122,6 +1285,8 @@ namespace QTO_Tool
             });
 
             AttachQtoAttributesPropertySet(model, stair, stairTemplate.AttributeUserStrings);
+
+            AttachQtoUnitsPropertySet(model, stair);
 
             stair.PredefinedType = IfcStairTypeEnum.NOTDEFINED;
 

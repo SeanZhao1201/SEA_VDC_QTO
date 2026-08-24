@@ -135,6 +135,22 @@ class Writer:
             "Formwork", None, elements, storey)
 
 
+def _ifc_guid(rhino_object_id):
+    """IFC GlobalId of a Rhino object id, or None.
+
+    The standard IFC base64 compression - byte-for-byte what xBIM's
+    IfcGloballyUniqueId.ConvertToBase64 produces (verified 2026-08-20 over
+    four vectors including all-zero and all-F), which is exactly how the QTO
+    take-off export identifies that same slab.
+    """
+    if not rhino_object_id:
+        return None
+    try:
+        return ifcopenshell.guid.compress(str(rhino_object_id).replace("-", ""))
+    except Exception:
+        return None
+
+
 def convert(json_path, out_path, sideforms_path=None):
     data = {"levels": [], "panel_thickness": 0.05, "prop_size": 0.15}
     if json_path:
@@ -167,6 +183,17 @@ def convert(json_path, out_path, sideforms_path=None):
     counts = defaultdict(int)
     for lv in data["levels"]:
         fl, z = lv["floor"], lv["z"]
+        # the generator names a level after what it FORMS (pour, or the
+        # slab); the "@37.26m" fallback only fires for a pre-2026-08-20 JSON
+        pour = lv.get("pour")
+        # The take-off export derives every element's IfcGlobalId from its
+        # Rhino object id (IFCMethods.SetDeterministicGlobalId), so the same
+        # compression here yields the GlobalId of the slab this formwork
+        # forms - a link a 4D consumer can RESOLVE, instead of re-deriving
+        # the correspondence from FLOOR + POUR (Mast4D, 2026-08-20).
+        slab_guids = [g for g in (_ifc_guid(i)
+                                  for i in lv.get("slab_ids") or []) if g]
+        lv_name = lv.get("name") or "Formwork Soffit {0} @{1:.2f}m".format(fl, z)
         elements = []
         regions = [Polygon(r) for r in lv["regions"]]
         holes = lv["holes"]
@@ -178,7 +205,12 @@ def convert(json_path, out_path, sideforms_path=None):
                         if poly.covers(Polygon(h).representative_point())]
             solid = w._extruded(coords, my_holes, z, panel)
             el = w.proxy("Formwork Soffit Platform", "platform", solid)
-            w.pset([el], {"FLOOR": fl})
+            plat_props = {"FLOOR": fl, "SOFFIT_Z_M": "{0:.3f}".format(z)}
+            if pour:
+                plat_props["POUR"] = str(pour)
+            if slab_guids:
+                plat_props["SLAB_GLOBALID"] = ", ".join(slab_guids)
+            w.pset([el], plat_props)
             elements.append(el)
             n_plat += 1
         for p in lv["props"]:
@@ -193,18 +225,30 @@ def convert(json_path, out_path, sideforms_path=None):
             solid = w._extruded(outer, [], p["top_z"],
                                 p["top_z"] - p["foot_z"])
             el = w.proxy("Formwork Support", "support", solid)
-            w.pset([el], {
+            sup_props = {
                 "FLOOR": fl, "STATUS": p["status"],
-                "HEIGHT_M": "{0:.3f}".format(p["top_z"] - p["foot_z"])})
+                "HEIGHT_M": "{0:.3f}".format(p["top_z"] - p["foot_z"])}
+            if pour:
+                sup_props["POUR"] = str(pour)
+            if slab_guids:
+                sup_props["SLAB_GLOBALID"] = ", ".join(slab_guids)
+            w.pset([el], sup_props)
             elements.append(el)
             n_sup += 1
             counts[p["status"]] += 1
         if not elements:
             continue
         assembly = w.f.create_entity(
-            "IfcElementAssembly", w._guid(), w.owner,
-            "Formwork Soffit {0} @{1:.2f}m".format(fl, z), None, None,
+            "IfcElementAssembly", w._guid(), w.owner, lv_name, None, None,
             w._place(), None, None, "NOTDEFINED", "NOTDEFINED")
+        asm_props = {"FLOOR": fl, "SOFFIT_Z_M": "{0:.3f}".format(z)}
+        if pour:
+            asm_props["POUR"] = str(pour)
+        if lv.get("slabs"):
+            asm_props["SLABS"] = ", ".join(lv["slabs"])
+        if slab_guids:
+            asm_props["SLAB_GLOBALID"] = ", ".join(slab_guids)
+        w.pset([assembly], asm_props)
         w._aggregate(assembly, elements)
         w.contain(storeys[fl], [assembly])
 
@@ -217,8 +261,15 @@ def convert(json_path, out_path, sideforms_path=None):
                 continue
             holes = [pn["hole"]] if pn.get("hole") else []
             solid = w._extruded(pn["profile"], holes, pn["z1"], depth)
-            name = ("Formwork Side Form" if pn["type"] == "side"
-                    else "Formwork Bulkhead")
+            # GENERIC element names, deliberately. Floor and pour live in
+            # the pset, never in the name: the 4D consumer binds geometry to
+            # schedule tasks by property EQUALITY only (no regex, no
+            # starts-with), so a name that varies per floor per pour becomes
+            # one binding rule per string - 71 of them on this model, to be
+            # rewritten for every new building (Mast4D, 2026-08-20). The
+            # human-readable naming belongs on the ASSEMBLY above these, and
+            # that is where it stays.
+            name = "Side Form" if pn["type"] == "side" else "Bulkhead"
             el = w.proxy(name, pn["type"], solid)
             props = {"FLOOR": pn["floor"], "TYPE": pn["type"],
                      "AREA_M2": "{0:.3f}".format(pn["area_m2"])}

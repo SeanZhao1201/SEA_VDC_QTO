@@ -2,7 +2,110 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Development status — 2026-08-19 (keep this section current when work lands)
+## Development status — 2026-08-20 (keep this section current when work lands)
+
+**PR #19 (break sheet P3) MERGED** (`0f1d180`, 2026-08-20). The manual
+Rhino pass it was waiting on was then run on the real Bellwether/Sunbreak
+model, end to end, and it found five real defects plus one scope gap. All
+are fixed; everything below is measured on that model, not estimated.
+
+**Field pass on `..._With Floor info.3dm` (2026-08-20) — three defects the
+synthetic suites could not see.** The synthetic scenes are too regular:
+
+- *`breaksheet_gen` flipped face normals twice.* `BrepFace.NormalAt`
+  already returns the OUTWARD normal, so the extra
+  `if OrientationIsReversed: normal = -normal` deleted every top face
+  whose flag happened to be set — **46 of 49 PT slabs**, silently (the
+  `if faces:` branch has no else). The sheet came out with 3 cells for 19
+  floors under a clean log. `formwork_gen_rhino._downward_faces` already
+  carried the comment warning about exactly this; the break-sheet code
+  reintroduced it.
+- *The import ADVISORY could never match a pour marker.*
+  `BrepLoop.To3dCurve()` on a face produced by `Brep.Split` comes back
+  with a micro-gap (`IsClosed` false) and `Curve.Contains` answers
+  `Unset`, not `Outside`, for an open curve — so exactly the SEVERED
+  regions were markerless while uncut ones answered correctly. Judged
+  with `BrepFace.IsPointOnFace` now (outer boundary and holes in one
+  call), loop test kept as a gap-closing fallback.
+- *`OPEN SHEET` took down both Rhino processes.* `Process.Start(<path>)`
+  runs ShellExecuteEx on — and pumps messages into — Rhino's UI thread.
+  Harmless on an empty Rhino (verified: two instances, no crash), fatal
+  with a 19 MB model and two WPF windows loaded. Now launches the parent's
+  own `Rhino.exe` with `UseShellExecute = false`, which also pins the child
+  to the same Rhino version.
+
+**Slabs on grade are pour-break targets (2026-08-20, user decision).** The
+single shared `["sog", "topping"]` exclude was doing two different jobs.
+Split in two, with a "do not re-merge" note at all four sites:
+`split_pourbreaks` / `breaksheet_gen` exclude only `topping` (a SOG has no
+soffit but is a real pour with real construction joints); `formwork_gen_rhino`
+/ `sideform_gen_rhino` keep both (nothing shores a slab on grade). Topping
+stays out on measurement: 6 of 8 sit 100% inside a PT slab's plan footprint,
+so drawing them would double-count. Effect: 49 → 56 slabs, 18 → 19 floors
+with cells, and P1 got a cell for the first time. The golden regression's
+baseline predates this and now excludes SOG from its per-floor counts
+explicitly (203 asserts, ALL PASS).
+
+**Formwork is named after what it forms, and split per pour (2026-08-20).**
+`@37.26m` told a scheduler nothing. The slab identity (layer, object name,
+`POUR`, `POUR_FLOOR`, Rhino id) is now carried from collection all the way
+to the level, soffit clustering keys on POUR before Z, and levels carry a
+precomputed `name` with a per-storey uniqueness pass. Assemblies read
+`Formwork for L03 Pour 1` / `Formwork for L01 Slab 1`; the elevation lives
+on in `SOFFIT_Z_M`. 45 → 65 levels, 47 → 66 platforms, **prop count
+unchanged** (1760 OK / 16 TALL) — only the platform was cut.
+
+**4D binding contract, from downstream review (Mast4D, 2026-08-20).** Their
+tool binds geometry to schedule tasks by property EQUALITY only — no regex,
+no starts-with, and "blank" is not a value. Accepted and implemented:
+
+- ELEMENT names are generic (`Side Form`, `Bulkhead`); floor and pour live
+  in the pset. Descriptive naming belongs on the ASSEMBLY and stays there.
+- An uncut slab that CONTAINS a pour dot claims that pour — the closure
+  strip is declared by the modeller on the sheet, not hardcoded in an
+  exporter (`split_pourbreaks.marker_claim`, attributes only).
+- The deck's `POUR` is mirrored into `QTO Properties`, the same path the
+  formwork uses.
+- A `QTO Units` pset states what the numbers actually are (`VOLUME=CY`,
+  `AREA=ft2`, `LENGTH=ft` on a ft/in model). Property NAMES were left alone
+  deliberately: a `_CY` suffix would be wrong on a metric project. Note the
+  file was never schema-invalid — `IfcReal` carries no unit claim.
+- **Every element's `IfcGlobalId` is now derived from its Rhino object id**
+  (`IFCMethods.SetDeterministicGlobalId`), so re-exports stop re-identifying
+  everything and breaking 4D task links. xBIM's `ConvertToBase64` and
+  ifcopenshell's `guid.compress` were verified byte-identical over four
+  vectors, so the formwork exporter addresses the same element with no
+  shared code: soffit platforms, props and assemblies carry
+  `SLAB_GLOBALID`. One-time cost, accepted: the first export re-identifies
+  everything once.
+- REJECTED as not ours: their duplicated storey tree and seven "container
+  node" proxies are artifacts of federating two files through SketchUp and
+  re-exporting as IFC2X3. Our native output is IFC4. They were asked to
+  re-measure against it.
+
+**Open, in priority order:**
+
+1. **Core jump-form + reshoring geometry does not exist** — 270 of their
+   animation slots bind to nothing (`Jump Form Locked` 120, `Jump Form
+   Unlocked` 60, `Pole Shore for Reshoring` 90). Minimum contract if built:
+   a generic element name plus `STATE`, `QTO Properties.FLOOR` on every
+   element, and for reshoring `FLOOR` names **the floor the shore supports**,
+   not the one it stands on. Priority is Turner's call.
+2. **Port `formwork_ifc_from_json.py` to C#/xBIM inside the plugin** so the
+   IFC export becomes a button and the CPython venv dependency goes away.
+   A verified 11-step plan exists (built and diffed as a POC against the
+   reference output: zero signature differences across 2098 proxies and 83
+   assemblies; extrusion-with-voids confirmed achievable on xBIM 6.1.605).
+   Five decisions were left open — project name, sides pset, deterministic
+   ids (now settled by the change above), Python drift, and the two
+   representation contexts.
+3. Side-form and bulkhead panels do not carry `SLAB_GLOBALID` —
+   `sideform_gen_rhino` panels have no slab id yet.
+4. The take-off IFC has NOT been re-exported since the GlobalId change; the
+   two exports' ids should be verified against each other once.
+
+### Earlier status (2026-08-19)
+
 
 **Break-sheet P3 COMPLETE on branch `feat/breaksheet-p3`** (2026-08-19,
 **PR #19**, open; pre-merge manual checklist in the PR body — overlay

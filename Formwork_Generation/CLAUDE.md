@@ -485,6 +485,42 @@ C#-side, pinned where Python is involved (60-assert headless suite):**
 The original GetPoint-authoring idea stays superseded by the sheet. The
 layer path below remains the power-user back door feeding the same JSON.
 
+**What the sheet's locked furniture is, and is not (2026-08-20, from a
+field question — "the reference lines don't always match that floor").**
+The furniture is a *drawing reference*, not a survey of the floor. Four
+documented reasons it can differ from the real level, in the order they
+actually bite:
+
+1. **A TYP cell draws its REPRESENTATIVE member only.** Exactly-identical
+   floors are safe by construction (byte-identical quantized fingerprints).
+   A *user-directed* near-TYP merge is not: the generator logs
+   `MERGED per user directive: … representative 'X' - its footprint is the
+   one drawn`, and every non-representative member differs by however many
+   vertices the NEAR-TYP line reported. On the Bellwether the modeller
+   merged L07…L16 into one cell whose members differ by 4 of 46 vertices,
+   so L11–L15 are drawn with L07's outline. Supports differ more often than
+   outlines and get their own per-member `NOTE:` line.
+2. **Supports are bounding-box rectangles**, not true sections — placeholder
+   fidelity, same as the formwork generator's prop proxies. A diagonal or
+   L-shaped core wall shows as one rectangle.
+3. **Only pour-break slab targets are drawn** (`SLAB_EXCLUDE`). Topping is
+   excluded, so a floor with toppings — L01 has eight — is drawn with less
+   area than it physically has. SOG *is* drawn since 2026-08-20.
+4. **Supports are collected in a band** `SUPPORT_BAND_M = 3.0 m` below the
+   floor top; anything stopping lower is not shown.
+
+Explicitly NOT a cause on the Bellwether: sloped or stepped slab tops. All
+56 pour-break slab targets were measured 2026-08-20 — every top face is
+planar (max tilt 0.00 deg, zero Z-span) and every slab's up-faces sit at a
+single level. Ramps remain out of scope for the formwork generator, which
+warns per face when a soffit spans Z; the sheet has no equivalent warning
+because no model has needed one yet.
+
+The reliable reference for drawing against is the **slab outline** (it is
+osnap-able and exact for the representative floor); treat supports as
+indicative. When a merged TYP cell matters, un-merge it in the MAKE dialog
+and draw that floor on its own cell.
+
 **Cut semantics v2:** a break is a **plan polyline — any orientation, jogs
 allowed** (routing around openings is normal practice); arbitrary planar curves
 are accepted but non-line segments are flagged in the report, not rejected.

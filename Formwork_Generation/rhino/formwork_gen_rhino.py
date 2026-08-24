@@ -53,6 +53,9 @@ PARAMS = {
     "min_hole": 0.5,             # m2; smaller slab openings ignored
     "z_cluster_tol": 0.02,       # soffits within this merge into one level
     "slab_layer_keyword": "slab",  # layer name first '_' segment must contain
+    # FORMWORK filter - narrower on purpose: a slab on grade has no soffit
+    # to form and nothing to shore. split_pourbreaks/breaksheet_gen use a
+    # WIDER pour-break filter that keeps SOG (2026-08-20). Do not unify.
     "slab_layer_exclude": ["sog", "topping"],  # skip these slab layers
                                  # (slab-on-grade / toppings need no soffit
                                  # formwork; they stay ray obstacles)
@@ -143,15 +146,67 @@ def soffit_faces(brep, cos_threshold=0.9397, log=None, layer=""):
     return out
 
 
+def slab_label(ident):
+    """Short human name for the slab a platform forms."""
+    if not ident:
+        return ""
+    return (ident.get("name") or "").strip() or (ident.get("layer") or "")
+
+
+def level_display_name(floor, pour, slab_names):
+    """The name a soffit level carries into IFC.
+
+    The soffit ELEVATION is deliberately not in the name: "@37.26m" told a
+    scheduler nothing, and a level is far easier to find by what it forms
+    (field feedback 2026-08-20). The elevation survives as SOFFIT_Z_M on
+    the assembly's pset, so nothing is lost.
+    """
+    if pour:
+        return "Formwork for {0} Pour {1}".format(floor, pour)
+    if len(slab_names) == 1:
+        return "Formwork for {0} {1}".format(floor, slab_names[0])
+    if slab_names:
+        return "Formwork for {0} ({1} slabs)".format(floor, len(slab_names))
+    return "Formwork for {0}".format(floor)
+
+
+def _pour_of(ident):
+    """POUR user string, normalised. The splitter writes "0" for a piece it
+    could not assign a pour to - that is "no pour", not pour zero."""
+    pour = ((ident or {}).get("pour") or "").strip()
+    return "" if pour == "0" else pour
+
+
 def cluster_by_z(faces_with_z, tol):
-    """Group (face, z) pairs into Z-clusters. Returns {cluster_z: [faces]}."""
-    clusters = []                     # list of [z_ref, [faces]]
-    for face, z in sorted(faces_with_z, key=lambda t: t[1]):
-        if clusters and abs(z - clusters[-1][0]) <= tol:
-            clusters[-1][1].append(face)
-        else:
-            clusters.append([z, [face]])
-    return [(c[0], c[1]) for c in clusters]
+    """Group (face, z[, ident]) into platform levels.
+
+    Grouped by POUR first, then by soffit Z inside each pour. The two pour
+    pieces of one floor share a soffit elevation, so a plain Z-clustering
+    merged them into ONE platform - which could then be named after
+    neither and scheduled with neither (decided 2026-08-20, option B).
+    Slabs carrying no POUR (an unsplit model) fall in one group and keep
+    the previous Z-only behaviour exactly.
+
+    Returns [(z, [faces], [idents])] ordered by elevation, then pour.
+    """
+    groups = {}
+    for item in faces_with_z:
+        face, z = item[0], item[1]
+        ident = item[2] if len(item) > 2 else None
+        groups.setdefault(_pour_of(ident), []).append((face, z, ident))
+    out = []
+    for key in sorted(groups):
+        clusters = []                 # list of [z_ref, [faces], [idents]]
+        for face, z, ident in sorted(groups[key], key=lambda t: t[1]):
+            if clusters and abs(z - clusters[-1][0]) <= tol:
+                clusters[-1][1].append(face)
+                clusters[-1][2].append(ident)
+            else:
+                clusters.append([z, [face], [ident]])
+        out.extend((c[0], c[1], c[2]) for c in clusters)
+    # ascending elevation keeps the run log readable; pour breaks ties
+    out.sort(key=lambda c: (c[0], _pour_of(c[2][0] if c[2] else None)))
+    return out
 
 
 # ── planar region building (platform outlines) ─────────────────────────────
@@ -504,7 +559,10 @@ def generate_formwork(slab_breps, obstacle_geoms, doc, params=None, log=None):
     # soffit faces of every slab, clustered by level
     cos_thr = math.cos(math.radians(20.0))
     all_faces = []
-    for brep, layer in slab_breps:
+    for entry in slab_breps:
+        # 3-tuples since 2026-08-20; tolerate the old (brep, layer) shape
+        brep, layer = entry[0], entry[1]
+        ident = entry[2] if len(entry) > 2 else None
         for face, z in soffit_faces(brep, cos_thr, log, layer):
             bbf = face.GetBoundingBox(True)
             if bbf.Max.Z - bbf.Min.Z > max(mu["z_cluster_tol"], tol * 3):
@@ -512,7 +570,7 @@ def generate_formwork(slab_breps, obstacle_geoms, doc, params=None, log=None):
                     "{1:.3f} units in Z — the flat platform at its centroid "
                     "level will not fit it (ramps are out of scope)".format(
                         layer, bbf.Max.Z - bbf.Min.Z))
-            all_faces.append((face, z))
+            all_faces.append((face, z, ident))
     if not all_faces:
         log("no soffit faces found — nothing to do")
         return {"levels": [], "stats": {}}
@@ -533,8 +591,23 @@ def generate_formwork(slab_breps, obstacle_geoms, doc, params=None, log=None):
     stats = {"OK": 0, "TALL": 0, "GROUNDED": 0, "GROUNDED_TALL": 0,
              "NOHIT_SKIPPED": 0, "bearing_skipped": 0}
     levels = []
-    for z, faces in clusters:
+    for z, faces, idents in clusters:
         fl = floor_name(z, floors, to_m)
+        pours = set(_pour_of(i) for i in idents)
+        pour = pours.pop() if len(pours) == 1 else ""
+        slab_names = []
+        slab_ids = []
+        for i in idents:
+            nm = slab_label(i)
+            if nm and nm not in slab_names:
+                slab_names.append(nm)
+            # the Rhino object id of the slab this platform forms: the QTO
+            # take-off export derives that element's IfcGlobalId from the
+            # same id, so the IFC writer can hand a 4D consumer a link that
+            # actually resolves instead of FLOOR+POUR inference
+            sid = (i or {}).get("id") or ""
+            if sid and sid not in slab_ids:
+                slab_ids.append(sid)
         regions, holes, bad_faces = build_platform_regions(
             faces, z, mu, tol, log)
         plats = platform_breps(regions, holes, z, mu["panel_thickness"],
@@ -583,7 +656,30 @@ def generate_formwork(slab_breps, obstacle_geoms, doc, params=None, log=None):
         levels.append({"z": z, "floor": fl, "platforms": plats,
                        "props": props, "n_skipped_bearing": n_bearing,
                        "n_faces": len(faces),
-                       "regions": regions, "holes": holes})
+                       "regions": regions, "holes": holes,
+                       "pour": pour or None, "slabs": slab_names,
+                       "slab_ids": slab_ids,
+                       "name": level_display_name(fl, pour, slab_names)})
+    # Names must be unique INSIDE a storey, or the IFC tree shows six
+    # identical rows: one layer can carry several slabs at different soffit
+    # levels (L01 on the real model has six). Colliding names fall back to
+    # the indexed form the field asked for - "Formwork for L01 Slab 1" -
+    # with the layer kept in SLABS and the elevation in SOFFIT_Z_M.
+    for fl in sorted(set(lv["floor"] for lv in levels)):
+        group = sorted([lv for lv in levels if lv["floor"] == fl],
+                       key=lambda lv: lv["z"])
+        counts = {}
+        for lv in group:
+            counts[lv["name"]] = counts.get(lv["name"], 0) + 1
+        used = {}
+        for lv in group:
+            base = lv["name"]
+            if counts[base] < 2:
+                continue
+            used[base] = used.get(base, 0) + 1
+            lv["name"] = ("{0} Level {1}".format(base, used[base])
+                          if lv.get("pour") else
+                          "Formwork for {0} Slab {1}".format(fl, used[base]))
     log("totals: " + ", ".join(
         "{0}={1}".format(k, v) for k, v in sorted(stats.items()) if v))
     return {"levels": levels, "stats": stats, "params_mu": mu}
@@ -617,14 +713,29 @@ def find_slabs_and_obstacles(doc, params, log):
     slabs, obstacles = [], []
     n_instances = 0
 
-    def _accept(geom, lname, first, excluded):
+    def _ident(obj, lname):
+        """Identity a platform can be named after. The pour-break derived
+        model tags every split piece with POUR / POUR_FLOOR / SOURCE_SLAB;
+        an unsplit model carries none of those and the layer name is the
+        whole identity."""
+        attrs = obj.Attributes
+        pour = floor = ""
+        try:
+            pour = attrs.GetUserString("POUR") or ""
+            floor = attrs.GetUserString("POUR_FLOOR") or ""
+        except Exception:
+            pass
+        return {"layer": lname, "name": (attrs.Name or ""),
+                "pour": pour, "pour_floor": floor, "id": str(obj.Id)}
+
+    def _accept(geom, lname, first, excluded, ident=None):
         if isinstance(geom, Rhino.Geometry.Extrusion):
             geom = geom.ToBrep(True)
         if not isinstance(geom, (Brep, Mesh)):
             return
         obstacles.append(geom)
         if isinstance(geom, Brep) and keyword in first and not excluded:
-            slabs.append((geom, lname))
+            slabs.append((geom, lname, ident))
 
     for obj in doc.Objects:
         if obj is None or obj.Attributes is None:
@@ -642,6 +753,7 @@ def find_slabs_and_obstacles(doc, params, log):
         first = lname.split("_")[0].lower()
         excluded = any(kw and kw.lower() in lname.lower()
                        for kw in params.get("slab_layer_exclude") or [])
+        ident = _ident(obj, lname)
         if isinstance(obj, Rhino.DocObjects.InstanceObject):
             idef = obj.InstanceDefinition
             if idef is None:
@@ -655,9 +767,9 @@ def find_slabs_and_obstacles(doc, params, log):
                 g = g.Duplicate()
                 if not g.Transform(xf):
                     continue
-                _accept(g, lname, first, excluded)
+                _accept(g, lname, first, excluded, ident)
             continue
-        _accept(obj.Geometry, lname, first, excluded)
+        _accept(obj.Geometry, lname, first, excluded, ident)
     log("document: {0} slab breps, {1} obstacle solids"
         "{2}".format(len(slabs), len(obstacles),
                      " ({0} block instances exploded in-memory)".format(
@@ -908,6 +1020,10 @@ def dump_json(doc, result, path, log):
     for level in result["levels"]:
         data["levels"].append({
             "floor": level["floor"],
+            "name": level.get("name"),
+            "pour": level.get("pour"),
+            "slabs": level.get("slabs") or [],
+            "slab_ids": level.get("slab_ids") or [],
             "z": level["z"] * to_m,
             "regions": [_curve_points_m(c, to_m) for c in level["regions"]],
             "holes": [_curve_points_m(c, to_m) for c in level["holes"]],

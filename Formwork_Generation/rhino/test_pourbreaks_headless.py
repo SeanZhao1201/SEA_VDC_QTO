@@ -386,6 +386,27 @@ def main():
     check("L2 locked original deleted (no duplication)",
           len(leftovers) == 0, "{0} leftover".format(len(leftovers)))
 
+    # Every split piece carries the checkup-surviving identity stamp
+    # (QTO_STABLE_ID) equal to its OWN object id - never the parent's,
+    # which sibling pieces would collide on - and no two pieces share a
+    # stamp. This is what makes formwork SLAB_GLOBALID resolve in the
+    # take-off IFC (2026-08-23).
+    pieces_all = [o for o in doc.Objects
+                  if o is not None and o.Attributes is not None
+                  and o.Attributes.GetUserString("SOURCE_SLAB") is not None]
+    stamps = [o.Attributes.GetUserString("QTO_STABLE_ID")
+              for o in pieces_all]
+    check("every split piece stamped with its own id",
+          len(pieces_all) > 0 and all(
+              s == str(o.Id) for s, o in zip(stamps, pieces_all)),
+          "{0} pieces, bad: {1}".format(
+              len(pieces_all),
+              [str(o.Id) for s, o in zip(stamps, pieces_all)
+               if s != str(o.Id)][:3]))
+    check("piece stable ids are unique",
+          len(set(stamps)) == len(stamps),
+          "{0} stamps, {1} unique".format(len(stamps), len(set(stamps))))
+
     # L3: arc cut — volume conserved, pieces real
     vols3 = [b.GetVolume() for _p, b, _o in p_l3]
     check("L3 arc split conserves volume",

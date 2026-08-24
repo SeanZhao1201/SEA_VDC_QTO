@@ -43,6 +43,9 @@ namespace QTO_Tool
                 EditorsOrganisationName = "Digital Charcoal"
             };
 
+            // one export = one uniqueness scope for the deterministic GlobalIds
+            usedDeterministicGlobalIds.Clear();
+
             var model = IfcStore.Create(editor, XbimSchemaVersion.Ifc4, XbimStoreType.InMemoryModel);
 
             using (ITransaction transaction = model.BeginTransaction("Initialise Model"))
@@ -489,37 +492,78 @@ namespace QTO_Tool
             return buildingElements;
         }
 
-        /// <summary>Derive the element's IfcGlobalId from its Rhino object id.
+        /// <summary>Derive the element's IfcGlobalId from its stable Rhino identity.
         ///
         /// xBIM mints a RANDOM GlobalId per element per export, so every re-export
         /// re-identified all ~2900 elements and broke any 4D task link built against
-        /// the previous file (Mast4D, 2026-08-20). The Rhino object id is already the
-        /// stable identity of the source solid - every template keeps it - and the
-        /// standard IFC base64 compression of it is byte-for-byte what ifcopenshell's
-        /// guid.compress() produces on this xBIM build (verified 2026-08-20 across
-        /// four vectors including all-zero and all-F), so the formwork exporter can
-        /// address the same element without sharing a line of code.
+        /// the previous file (Mast4D, 2026-08-20). The standard IFC base64 compression
+        /// used here is byte-for-byte what ifcopenshell's guid.compress() produces on
+        /// this xBIM build (verified 2026-08-23 across all 811 elements of the
+        /// Bellwether derived model), so the formwork exporter can address the same
+        /// element without sharing a line of code.
         ///
-        /// One-time consequence, accepted deliberately: the first export after this
-        /// change re-identifies every element once; from then on the ids are stable.
+        /// The identity is the QTO_STABLE_ID user string when present, because the
+        /// checkup re-mints every object id it rebuilds (all 811 changed in one run,
+        /// 2026-08-23) - obj.Id alone is only stable within one checkup generation.
+        /// The stamp is written at the first checkup with the FILE id, the same id
+        /// the formwork generator reads, and preserved by later checkups. Objects
+        /// without a stamp (added after the checkup, or a failed stamp) fall back to
+        /// their object id.
+        ///
+        /// A stable id that another element of this export already used (copy-paste
+        /// duplicates the user string; the checkup's duplicate pass can miss locked
+        /// or hidden holders) must never become a duplicate GlobalId - that is
+        /// schema-invalid - so the second holder falls back to its object id, loudly.
         ///
         /// Never throws. An unusable id leaves xBIM's random one - no worse than the
         /// previous behaviour - and says so in the log rather than silently.</summary>
-        private static void SetDeterministicGlobalId(IfcRoot element, string rhinoObjectId)
+        private static readonly HashSet<string> usedDeterministicGlobalIds = new HashSet<string>(StringComparer.Ordinal);
+
+        private static void SetDeterministicGlobalId(IfcRoot element, Dictionary<string, string> attributeUserStrings, string rhinoObjectId)
         {
-            if (element == null || string.IsNullOrWhiteSpace(rhinoObjectId))
+            if (element == null)
                 return;
 
             try
             {
-                Guid id;
-                if (!Guid.TryParse(rhinoObjectId, out id) || id == Guid.Empty)
+                Guid id = Guid.Empty;
+
+                string stamped;
+                bool usedStamp = attributeUserStrings != null &&
+                    attributeUserStrings.TryGetValue(Methods.StableIdKey, out stamped) &&
+                    Guid.TryParse(stamped, out id) && id != Guid.Empty;
+
+                if (!usedStamp && (!Guid.TryParse(rhinoObjectId, out id) || id == Guid.Empty))
                 {
                     Logger.Warn("IFC: '" + rhinoObjectId + "' is not a usable Rhino object id - keeping the generated GlobalId.");
                     return;
                 }
 
-                element.GlobalId = IfcGloballyUniqueId.ConvertToBase64(id);
+                string candidate = IfcGloballyUniqueId.ConvertToBase64(id);
+
+                if (!usedDeterministicGlobalIds.Add(candidate))
+                {
+                    Guid fallback;
+                    if (usedStamp && Guid.TryParse(rhinoObjectId, out fallback) && fallback != Guid.Empty && fallback != id)
+                    {
+                        string second = IfcGloballyUniqueId.ConvertToBase64(fallback);
+
+                        if (usedDeterministicGlobalIds.Add(second))
+                        {
+                            Logger.Warn("IFC: stable id '" + id + "' is already used by another element of this export;" +
+                                " element " + rhinoObjectId + " was exported under its object id instead." +
+                                " Re-run Start Checkup to repair the duplicated stamps.");
+                            element.GlobalId = second;
+                            return;
+                        }
+                    }
+
+                    Logger.Warn("IFC: id '" + id + "' is already used by another element of this export and no unique" +
+                        " fallback exists - keeping the generated GlobalId for element '" + rhinoObjectId + "'.");
+                    return;
+                }
+
+                element.GlobalId = candidate;
             }
             catch (Exception ex)
             {
@@ -651,7 +695,7 @@ namespace QTO_Tool
         {
             var wall = model.Instances.New<IfcWall>();
             wall.Name = wallTemplate.nameAbb;
-            SetDeterministicGlobalId(wall, wallTemplate.id);
+            SetDeterministicGlobalId(wall, wallTemplate.AttributeUserStrings, wallTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -732,7 +776,7 @@ namespace QTO_Tool
         {
             var beam = model.Instances.New<IfcBeam>();
             beam.Name = beamTemplate.nameAbb;
-            SetDeterministicGlobalId(beam, beamTemplate.id);
+            SetDeterministicGlobalId(beam, beamTemplate.AttributeUserStrings, beamTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -813,7 +857,7 @@ namespace QTO_Tool
         {
             var column = model.Instances.New<IfcColumn>();
             column.Name = columnTemplate.nameAbb;
-            SetDeterministicGlobalId(column, columnTemplate.id);
+            SetDeterministicGlobalId(column, columnTemplate.AttributeUserStrings, columnTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -869,7 +913,7 @@ namespace QTO_Tool
         {
             var curb = model.Instances.New<IfcWall>();
             curb.Name = curbTemplate.nameAbb;
-            SetDeterministicGlobalId(curb, curbTemplate.id);
+            SetDeterministicGlobalId(curb, curbTemplate.AttributeUserStrings, curbTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -950,7 +994,7 @@ namespace QTO_Tool
         {
             var footing = model.Instances.New<IfcFooting>();
             footing.Name = footingTemplate.nameAbb;
-            SetDeterministicGlobalId(footing, footingTemplate.id);
+            SetDeterministicGlobalId(footing, footingTemplate.AttributeUserStrings, footingTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -1011,7 +1055,7 @@ namespace QTO_Tool
         {
             var continuousFooting = model.Instances.New<IfcFooting>();
             continuousFooting.Name = continuousFootingTemplate.nameAbb;
-            SetDeterministicGlobalId(continuousFooting, continuousFootingTemplate.id);
+            SetDeterministicGlobalId(continuousFooting, continuousFootingTemplate.AttributeUserStrings, continuousFootingTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -1097,7 +1141,7 @@ namespace QTO_Tool
         {
             var slab = model.Instances.New<IfcSlab>();
             slab.Name = slabTemplate.nameAbb;
-            SetDeterministicGlobalId(slab, slabTemplate.id);
+            SetDeterministicGlobalId(slab, slabTemplate.AttributeUserStrings, slabTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -1182,7 +1226,7 @@ namespace QTO_Tool
         {
             var styrofoam = model.Instances.New<IfcSlab>();
             styrofoam.Name = styrofoamTemplate.nameAbb;
-            SetDeterministicGlobalId(styrofoam, styrofoamTemplate.id);
+            SetDeterministicGlobalId(styrofoam, styrofoamTemplate.AttributeUserStrings, styrofoamTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>
@@ -1228,7 +1272,7 @@ namespace QTO_Tool
         {
             var stair = model.Instances.New<IfcStair>();
             stair.Name = stairTemplate.nameAbb;
-            SetDeterministicGlobalId(stair, stairTemplate.id);
+            SetDeterministicGlobalId(stair, stairTemplate.AttributeUserStrings, stairTemplate.id);
 
             //set a few basic properties
             model.Instances.New<IfcRelDefinesByProperties>(rel =>

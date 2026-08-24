@@ -792,6 +792,11 @@ def split_document(doc, data, params=None, log=None):
             attr.SetUserString("POUR", str(pour))
             attr.SetUserString("POUR_FLOOR", fl)
             attr.SetUserString("SOURCE_SLAB", source_id)
+            # the parent's checkup-surviving stable id must NOT ride onto the
+            # pieces: sibling pieces would collide on it and the take-off IFC
+            # could not tell them apart; each piece gets its OWN id stamped
+            # right after the add below (SOURCE_SLAB keeps the parentage)
+            attr.SetUserString("QTO_STABLE_ID", None)
             new_id = doc.Objects.AddBrep(rec["brep"], attr)
             if new_id == System.Guid.Empty:
                 add_failed = True
@@ -824,6 +829,24 @@ def split_document(doc, data, params=None, log=None):
                     "FAILED (slab MISSING — do NOT use this derived "
                     "model)"))
             continue
+
+        # Stamp each piece with its own id as the checkup-surviving identity:
+        # the formwork generator and the QTO IFC export both derive the
+        # cross-export id from QTO_STABLE_ID, and the take-off session's
+        # checkup preserves an existing stamp instead of re-minting. A failed
+        # stamp is harmless - with no stamp, both sides fall back to the same
+        # object id - so it only warns.
+        for aid in added_ids:
+            pobj = doc.Objects.FindId(aid)
+            if pobj is None:
+                continue
+            pattr = pobj.Attributes.Duplicate()
+            pattr.SetUserString("QTO_STABLE_ID", str(aid))
+            if not doc.Objects.ModifyAttributes(pobj, pattr, True):
+                log("  WARNING: {0}/{1}: piece {2} could not be stamped with "
+                    "QTO_STABLE_ID; the take-off export falls back to the "
+                    "same object id, links still resolve".format(
+                        fl, layer.Name, aid))
 
         # bookkeeping only after every piece verifiably landed
         for rec in rec_pieces:

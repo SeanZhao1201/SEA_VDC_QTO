@@ -712,12 +712,25 @@ def find_slabs_and_obstacles(doc, params, log):
     keyword = params["slab_layer_keyword"].lower()
     slabs, obstacles = [], []
     n_instances = 0
+    # first-claim-wins guard, mirroring the QTO export's duplicate-GlobalId
+    # guard: two objects sharing a stamp (copy-paste after the last checkup)
+    # must not BOTH claim it, or the second slab's SLAB_GLOBALID would bind
+    # the 4D link to the FIRST slab's take-off element - silently wrong.
+    claimed_stamps = {}
 
     def _ident(obj, lname):
         """Identity a platform can be named after. The pour-break derived
         model tags every split piece with POUR / POUR_FLOOR / SOURCE_SLAB;
         an unsplit model carries none of those and the layer name is the
-        whole identity."""
+        whole identity.
+
+        The "id" is what SLAB_GLOBALID is derived from, so it must be the
+        SAME identity the QTO take-off export compresses into IfcGlobalId.
+        That is the QTO_STABLE_ID user string when present (the checkup
+        re-mints obj.Id on every run and stamps/preserves this key instead;
+        the splitter stamps each piece with its own id), falling back to
+        obj.Id for never-checked-up objects - where the take-off session's
+        first checkup will stamp exactly that same id."""
         attrs = obj.Attributes
         pour = floor = ""
         try:
@@ -725,8 +738,28 @@ def find_slabs_and_obstacles(doc, params, log):
             floor = attrs.GetUserString("POUR_FLOOR") or ""
         except Exception:
             pass
+        sid = str(obj.Id)
+        try:
+            stamp = attrs.GetUserString("QTO_STABLE_ID") or ""
+            if stamp:
+                ok, parsed = System.Guid.TryParse(stamp)
+                if ok and parsed != System.Guid.Empty:
+                    norm = str(parsed)
+                    holder = claimed_stamps.get(norm)
+                    if holder is None or holder == str(obj.Id):
+                        claimed_stamps[norm] = str(obj.Id)
+                        sid = norm
+                    else:
+                        log("  WARNING: objects {0} and {1} share "
+                            "QTO_STABLE_ID {2} (copy-paste since the last "
+                            "checkup?); {1} keeps its own object id so its "
+                            "formwork cannot bind to the wrong slab - "
+                            "re-run Start Checkup to repair the stamps"
+                            .format(holder, obj.Id, norm))
+        except Exception:
+            pass
         return {"layer": lname, "name": (attrs.Name or ""),
-                "pour": pour, "pour_floor": floor, "id": str(obj.Id)}
+                "pour": pour, "pour_floor": floor, "id": sid}
 
     def _accept(geom, lname, first, excluded, ident=None):
         if isinstance(geom, Rhino.Geometry.Extrusion):

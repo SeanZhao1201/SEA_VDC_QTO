@@ -129,15 +129,35 @@ def _extended_ink(xy, ext):
 
 
 def _face_contains(face_brep, x, y, tol):
-    """Point-in-region for a single planar face: inside the outer loop and
-    inside no hole (a marker dropped in an opening must not claim it)."""
+    """Point-in-region for a single planar face: inside the trimmed face,
+    holes excluded (a marker dropped in an opening must not claim it).
+
+    Judged with the FACE's own trim evaluation (IsPointOnFace covers the
+    outer boundary and every hole in one call), never by loop containment:
+    BrepLoop.To3dCurve() on a face that came out of Brep.Split comes back
+    with a micro-gap (IsClosed False), and Curve.Contains answers Unset -
+    not Outside - for an open curve. That silently made every SEVERED
+    region markerless while the uncut ones answered correctly, so the
+    advisory could only ever report "N region(s) without a marker" on the
+    floors that actually had breaks (real model, 2026-08-19: 2 pour dots
+    drawn, 0 hits). The loop test survives as a fallback, gap closed."""
     pt = Rhino.Geometry.Point3d(x, y, 0.0)
     face = face_brep.Faces[0]
+    try:
+        rc, u, v = face.ClosestPoint(pt)
+        if rc:
+            return (face.IsPointOnFace(u, v) ==
+                    Rhino.Geometry.PointFaceRelation.Interior)
+    except Exception:
+        pass
     inside = False
     for li in range(face.Loops.Count):
         loop = face.Loops[li]
-        cont = loop.To3dCurve().Contains(
-            pt, Rhino.Geometry.Plane.WorldXY, tol)
+        c3 = loop.To3dCurve()
+        if not c3.IsClosed:
+            bb = c3.GetBoundingBox(True)
+            c3.MakeClosed(bb.Diagonal.Length * 0.05)
+        cont = c3.Contains(pt, Rhino.Geometry.Plane.WorldXY, tol)
         if loop.LoopType == Rhino.Geometry.BrepLoopType.Outer:
             if cont == Rhino.Geometry.PointContainment.Inside:
                 inside = True

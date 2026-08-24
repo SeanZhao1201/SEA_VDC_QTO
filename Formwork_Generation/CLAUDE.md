@@ -116,6 +116,18 @@ IfcBuilding → IfcBuildingStorey`; per floor one `IfcElementAssembly` of
 element tagged with **`QTO Properties.FLOOR`** (the join key for 4D search
 sets); geometry as `IfcExtrudedAreaSolid` in absolute mm.
 
+> **Element identity — `QTO_STABLE_ID` (2026-08-23).** The QTO checkup
+> deletes and re-adds every solid, re-minting `obj.Id` on every run, so the
+> object id alone cannot link the two exports. The checkup stamps each
+> object's FIRST-seen id into the `QTO_STABLE_ID` user string (preserved on
+> re-checkups; attributes survive the re-add), `split_pourbreaks` stamps
+> every pour piece with its own new id, and `formwork_gen_rhino._ident`
+> prefers a valid-GUID stamp over `obj.Id` — the same preference the QTO
+> exporter's `SetDeterministicGlobalId` applies. `SLAB_GLOBALID` is the
+> ifcopenshell `guid.compress` of that identity, so it resolves directly to
+> the take-off IFC's `IfcGlobalId` (verified 67/67 on the Bellwether derived
+> model, 2026-08-23). Never copy a `QTO_STABLE_ID` onto a new object.
+
 > **Floor-naming — the most likely integration snag.** `--floors` selection and
 > floor ordering assume labels of the form **`L<digits>`** (`L01`…`L16`), with
 > `P1`/`R1`/`R2` sorted after. `QTO_Tool`'s `FLOOR` is whatever floor *name* the

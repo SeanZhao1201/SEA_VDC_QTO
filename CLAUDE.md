@@ -2,7 +2,84 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Development status — 2026-08-20 (keep this section current when work lands)
+## Development status — 2026-08-23 (keep this section current when work lands)
+
+**GlobalId cross-export verification EXECUTED (2026-08-23, the old open
+item 4) — encoding PASSES, linkage FAILS, cause isolated.** The derived
+`model_pourbreaks.3dm` was run through the real UI flow (RunQTO → checkup
+811/811 solids clean → Calculate 6.2 s, 0 bad → IFC export,
+`C:\Users\seanz\Desktop\Tested.ifc`, 19 storeys) and compared three-way
+against `Sunbreak_formwork.ifc` and the checkup log's 811 `old id -> new id`
+lines:
+
+- **In-vivo encoding: 811/811.** Every exported `IfcGlobalId` equals
+  `ifcopenshell.guid.compress` of the element's post-checkup Rhino id —
+  xBIM `ConvertToBase64` and ifcopenshell agree over 811 real elements,
+  zero duplicates, zero unparseable ids. The four-vector claim is now
+  field-scale fact. `POUR` mirror (36 slabs) and `QTO Units`
+  (all 82 slabs, VOLUME=CY/AREA=ft2/LENGTH=ft) confirmed in the same file.
+- **Direct SLAB_GLOBALID linkage: 0/67 — then FIXED the same night.** Not
+  an encoding problem: **the checkup re-mints every object's Rhino id**
+  (`PrepareObject` Adds a copy while the original still lives — id
+  collision forces a fresh Guid — then deletes the original;
+  `Methods.cs:242,295,709`; the log's own `object <old> -> solid <new>`
+  lines are the proof, and ids re-mint on EVERY checkup run). Formwork
+  computes `SLAB_GLOBALID` from the .3dm file's ids; the take-off export
+  goes through a fresh checkup first (Calculate is hard-gated on it).
+
+**The fix (2026-08-23, user chose the stable-id route): `QTO_STABLE_ID`, a
+checkup-surviving per-object user string, is now the identity everything
+derives the 22-char id from.** Attributes ride onto the checkup's re-added
+copies, so the stamp survives what obj.Id cannot. Four coordinated pieces:
+
+- `Methods.EnsureStableId` — the checkup stamps each valid take-off object
+  with its own (pre-checkup) id unless a usable stamp exists; first checkup
+  of a file therefore stamps the FILE ids — exactly what an
+  already-generated formwork IFC referenced — and re-checkups preserve
+  them. A post-pass (`RestampDuplicateStableIds`) re-stamps duplicate
+  values (join/block fan-out share one attributes instance; user
+  copy-paste clones user strings), loudly.
+- `IFCMethods.SetDeterministicGlobalId` now prefers the stamp from
+  `template.AttributeUserStrings` over `template.id`, with a per-export
+  `HashSet` guard: a colliding stable id falls back to the object id,
+  never a duplicate GlobalId (reset in `CreateandInitIFCModel`).
+- `split_pourbreaks.py` clears the parent's stamp off each piece pre-add
+  (siblings would collide) and stamps every landed piece with its own new
+  id post-add; `marker_claim` and the rollback re-add stay untouched.
+- `formwork_gen_rhino._ident` prefers a valid-GUID stamp over `obj.Id`,
+  so the live-doc flow (stamps S0, file ids S1) stays in agreement too.
+
+Verified end-to-end the same night, same harness as the failing run:
+checkup **811/811 newly stamped**, GlobalIds derive from FILE ids 811/811
+(re-minted ids: 0), **direct SLAB_GLOBALID match 67/67** (was 0/67) with
+FLOOR/POUR agreeing 67/67, zero duplicate GlobalIds — against the formwork
+IFC generated BEFORE the fix, i.e. existing artifacts did not need
+regeneration. Headless suites: pourbreaks synthetic (+2 new stable-id
+asserts: every piece stamped with its own id, stamps unique), formwork
+synthetic, and the golden Bellwether regression — **ALL PASS**; build 0/0.
+The fingerprint gates are unaffected (bbox-only hash). Note: stamps are
+written inside the checkup undo record, so REVERT also reverts them; and
+`QTO_STABLE_ID` now appears in each element's `QTO Attributes` pset — a
+deliberate trace of the raw GUID behind the GlobalId.
+
+Hardened by an adversarial review (3 confirmed defects, all folded in;
+3 refuted — among them "locked objects refuse attribute changes", disproved
+empirically in real Rhino 8): the duplicate-stamp keeper now prefers a
+CLOSED SOLID before document order (a red bad fragment sharing its source's
+attributes could otherwise keep the 4D-linked stamp while the verified
+solid churned); a stamp-only checkup keeps its undo serial (stamp commits
+are real mutations — zeroing the serial made the user's next Ctrl+Z
+silently pop them); and `formwork_gen_rhino._ident` got the same
+first-claim-wins duplicate guard the exporter has, so a copy-pasted stamp
+degrades to a loud, detectably-missing link instead of silently binding
+two slabs' formwork to one element (both logs point at the remedy: re-run
+Start Checkup). All suites re-run green after the hardening. Residual,
+documented: between checkups, a duplicated stamp resolves first-claim-wins;
+the next checkup repairs it deterministically. The UI acceptance numbers
+above were measured on the pre-hardening build; every hardening change is
+a no-op on that path (unique stamps, no fan-out).
+
+### Earlier status (2026-08-20)
 
 **PR #19 (break sheet P3) MERGED** (`0f1d180`, 2026-08-20). The manual
 Rhino pass it was waiting on was then run on the real Bellwether/Sunbreak
@@ -101,8 +178,10 @@ no starts-with, and "blank" is not a value. Accepted and implemented:
    representation contexts.
 3. Side-form and bulkhead panels do not carry `SLAB_GLOBALID` —
    `sideform_gen_rhino` panels have no slab id yet.
-4. The take-off IFC has NOT been re-exported since the GlobalId change; the
-   two exports' ids should be verified against each other once.
+4. ~~The take-off IFC has NOT been re-exported since the GlobalId change; the
+   two exports' ids should be verified against each other once.~~ DONE
+   2026-08-23 — encoding 811/811, direct linkage 0/67, cause = checkup id
+   re-mint; see the top of this file.
 
 ### Earlier status (2026-08-19)
 

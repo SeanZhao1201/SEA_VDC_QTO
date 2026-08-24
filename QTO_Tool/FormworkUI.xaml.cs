@@ -536,12 +536,48 @@ namespace QTO_Tool
                 MessageBox.Show("No break sheet yet - run MAKE BREAK SHEET first.");
                 return;
             }
-            // Opens in a separate Rhino instance (Windows file association) -
-            // deliberately NOT in this one: opening a document here would
-            // close the model file this window is working against.
-            Process.Start(SheetFile);
-            AppendLog("Sheet opened in a separate Rhino. Draw, SAVE there, " +
-                "then IMPORT SHEET here.");
+            // Opens in a separate Rhino instance - deliberately NOT in this
+            // one: opening a document here would close the model file this
+            // window is working against. Launch THIS Rhino's own executable
+            // with CreateProcess (UseShellExecute = false) instead of shell-
+            // executing the .3dm: ShellExecuteEx runs on - and pumps messages
+            // into - Rhino's UI thread, and that re-entrancy is the leading
+            // suspect for the 2026-08-19 field crash that took down BOTH the
+            // child and the loaded-model parent. It also pins the child to
+            // the same Rhino version as the parent, which the file
+            // association does not guarantee.
+            string rhinoExe = "";
+            try
+            {
+                rhinoExe = Process.GetCurrentProcess().MainModule.FileName;
+            }
+            catch (Exception resolveEx)
+            {
+                Logger.Error("Could not resolve the running Rhino executable - " +
+                    "falling back to the file association.", resolveEx);
+            }
+            try
+            {
+                if (rhinoExe.Length > 0)
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo(
+                        rhinoExe, "\"" + SheetFile + "\"");
+                    psi.UseShellExecute = false;
+                    Process.Start(psi);
+                }
+                else
+                {
+                    Process.Start(SheetFile);
+                }
+                AppendLog("Sheet opened in a separate Rhino. Draw, SAVE there, " +
+                    "then IMPORT SHEET here.");
+            }
+            catch (Exception launchEx)
+            {
+                Logger.Error("Launching a second Rhino for the break sheet failed.", launchEx);
+                AppendLog("Could not open the sheet automatically - open it by hand: " +
+                    SheetFile);
+            }
         }
 
         private void ImportSheet_Clicked(object sender, RoutedEventArgs e)

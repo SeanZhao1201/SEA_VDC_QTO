@@ -62,6 +62,10 @@ try:
     import pourbreak_harvest as pbh
     import pourbreak_restore as pbr
     import split_pourbreaks as pbs
+    # P4: the sheet generator's SLAB_EXCLUDE must track the splitter's -
+    # a cell for a slab the splitter will never cut invites breaks that
+    # silently do nothing, and the reverse loses a whole pour off the sheet
+    import breaksheet_gen as bsg
 except Exception:
     import traceback
     write_report(["IMPORT FAILURE", traceback.format_exc()])
@@ -325,11 +329,23 @@ def main():
     if report is None:
         return
 
+    # P4 (2026-08-20): the POUR-BREAK filter no longer excludes slabs on
+    # grade - a SOG has no soffit but it is a real pour with real
+    # construction joints. Only topping stays out (it is poured on an
+    # existing deck and overlaps it in plan). The FORMWORK filters stay
+    # wider; the two lists must NOT be re-merged.
+    pb_excl = [e.lower() for e in pbs.PARAMS["slab_layer_exclude"]]
+    fw_excl = [e.lower() for e in fw.PARAMS["slab_layer_exclude"]]
+    check("pour-break filter admits SOG", "sog" not in pb_excl)
+    check("pour-break filter still excludes topping", "topping" in pb_excl)
+    check("formwork filter still excludes SOG", "sog" in fw_excl)
+    check("break sheet tracks the splitter's excludes",
+          set(pb_excl) == set(e.lower() for e in bsg.SLAB_EXCLUDE))
     sog = [o for o in doc.Objects
            if o is not None and o.Attributes is not None
            and doc.Layers[o.Attributes.LayerIndex] is not None
            and doc.Layers[o.Attributes.LayerIndex].Name == "Slab_SOG"]
-    check("SOG slab untouched (layer exclude)", len(sog) == 1)
+    check("SOG on a floor without breaks stays whole", len(sog) == 1)
 
     p_l1 = pieces_with_pour(doc, "L1")
     p_l2 = pieces_with_pour(doc, "L2")
@@ -444,8 +460,14 @@ def main():
     check("L7 slab reported unsplit (floor without breaks)",
           report["floors"].get("L7", {}).get("slabs", [{}])[0]
           .get("status") == "no break for floor")
-    check("P1 absent from report (SOG excluded outright)",
-          "P1" not in report["floors"])
+    # P4 (2026-08-20): P1 now REACHES the report - its SOG is a pour-break
+    # target - and is reported unsplit because that floor carries no breaks,
+    # exactly like L7. Before, the layer filter dropped it silently.
+    check("P1 reaches the report now that SOG is a target",
+          "P1" in report["floors"])
+    check("P1 SOG reported unsplit (floor without breaks)",
+          report["floors"].get("P1", {}).get("slabs", [{}])[0]
+          .get("status") == "no break for floor")
 
 
 try:

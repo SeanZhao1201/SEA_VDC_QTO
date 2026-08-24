@@ -128,6 +128,18 @@ def main():
     check("36 pieces total (as in 2026-07)", n_pieces_new == 36,
           "got {0}".format(n_pieces_new))
 
+    # The golden report predates 2026-08-20, when the POUR-BREAK filter was
+    # widened to admit slabs on grade (a SOG has no soffit but it is a real
+    # pour with real construction joints; only topping stays out, because it
+    # is poured on an existing deck and overlaps it in plan). SOG slabs are
+    # therefore legitimately NEW targets that the golden cannot know about -
+    # excluded from the count comparison, asserted on their own here.
+    n_sog_total = sum(1 for frep in report["floors"].values()
+                      for srec in frep["slabs"]
+                      if "sog" in (srec.get("layer") or "").lower())
+    check("slabs on grade are pour-break targets (widened 2026-08-20)",
+          n_sog_total > 0, "found {0}".format(n_sog_total))
+
     for fl, gfl in sorted(golden["floors"].items()):
         nfl = report["floors"].get(fl)
         g_slabs = gfl.get("slabs", [])
@@ -137,10 +149,15 @@ def main():
             check("floor {0} present".format(fl), len(g_slabs) == 0,
                   "golden has {0} slabs".format(len(g_slabs)))
             continue
-        n_slabs = list(nfl["slabs"])
-        check("{0}: slab count".format(fl),
+        n_slabs = [n for n in nfl["slabs"]
+                   if "sog" not in (n.get("layer") or "").lower()]
+        n_sog = len(nfl["slabs"]) - len(n_slabs)
+        check("{0}: slab count (excluding slabs on grade)".format(fl),
               len(n_slabs) == len(g_slabs),
-              "{0} vs golden {1}".format(len(n_slabs), len(g_slabs)))
+              "{0} vs golden {1}{2}".format(
+                  len(n_slabs), len(g_slabs),
+                  " (+{0} SOG admitted 2026-08-20)".format(n_sog)
+                  if n_sog else ""))
         for g in g_slabs:
             # match by layer + original volume (stable identity)
             match = None

@@ -246,6 +246,7 @@ namespace QTO_Tool
             // authoring aids stay available; generation is gated
             this.SplitButton.IsEnabled = this.stampAllowsGeneration && !this.runBusy;
             this.GenerateButton.IsEnabled = this.stampAllowsGeneration && !this.runBusy;
+            this.GenerateJumpFormButton.IsEnabled = this.stampAllowsGeneration && !this.runBusy;
         }
 
         /// <summary>Stamp gate re-checked AT CLICK TIME - the state shown at
@@ -321,6 +322,7 @@ namespace QTO_Tool
             {
                 this.SplitButton.IsEnabled = false;
                 this.GenerateButton.IsEnabled = false;
+                this.GenerateJumpFormButton.IsEnabled = false;
             }
             else
             {
@@ -1163,50 +1165,9 @@ namespace QTO_Tool
                 return;
             }
             string model;
-            if (this.InputDerived.IsChecked == true)
+            if (!TryPickInputModel("Generate", out model))
             {
-                if (!File.Exists(DerivedModel))
-                {
-                    // never silently fall back to the original: the user
-                    // asked for the derived model, and formwork generated on
-                    // the wrong input looks exactly like a clean run
-                    MessageBox.Show("The pour-break derived model is missing (" +
-                        DerivedModel + "). Run SPLIT BREAKS first, or select the " +
-                        "original model.");
-                    return;
-                }
-                // Existence is not enough: the staging file names are fixed
-                // machine-wide, so the file may be stale for this document or
-                // belong to a different project - and formwork generated on
-                // the wrong input looks exactly like a clean run.
-                string mismatch;
-                if (!FormworkMethods.DerivedModelMatches(RunQTO.doc, out mismatch))
-                {
-                    // The reason names the exact cause (foreign doc, geometry,
-                    // floors, re-harvested breaks, corrupt sidecar); it must
-                    // outlive the message box.
-                    Logger.Warn("Generate refused: derived model mismatch - " + mismatch);
-                    AppendLog("Generate refused: " + mismatch);
-
-                    MessageBox.Show(mismatch);
-                    RefreshDerivedAvailability();
-                    return;
-                }
-                model = DerivedModel;
-            }
-            else
-            {
-                try
-                {
-                    model = FormworkMethods.StageModelCopy(RunQTO.doc);
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error("Generate staging failed.", ex);
-
-                    AppendLog("Staging FAILED: " + ex.Message);
-                    return;
-                }
+                return;
             }
             AppendLog("--- generate formwork (child Rhino, two passes) ---");
             SetBusy(true);
@@ -1265,6 +1226,112 @@ namespace QTO_Tool
                     catch { }
                 }
             });
+        }
+
+        /// <summary>Resolve the selected input model (original staged copy or
+        /// the gated pour-break derived model). Shared by every Generate-
+        /// family handler; a false return means the refusal was already
+        /// logged and shown.</summary>
+        private bool TryPickInputModel(string caller, out string model)
+        {
+            model = null;
+            if (this.InputDerived.IsChecked == true)
+            {
+                if (!File.Exists(DerivedModel))
+                {
+                    // never silently fall back to the original: the user
+                    // asked for the derived model, and formwork generated on
+                    // the wrong input looks exactly like a clean run
+                    MessageBox.Show("The pour-break derived model is missing (" +
+                        DerivedModel + "). Run SPLIT BREAKS first, or select the " +
+                        "original model.");
+                    return false;
+                }
+                // Existence is not enough: the staging file names are fixed
+                // machine-wide, so the file may be stale for this document or
+                // belong to a different project - and formwork generated on
+                // the wrong input looks exactly like a clean run.
+                string mismatch;
+                if (!FormworkMethods.DerivedModelMatches(RunQTO.doc, out mismatch))
+                {
+                    // The reason names the exact cause (foreign doc, geometry,
+                    // floors, re-harvested breaks, corrupt sidecar); it must
+                    // outlive the message box.
+                    Logger.Warn(caller + " refused: derived model mismatch - " + mismatch);
+                    AppendLog(caller + " refused: " + mismatch);
+
+                    MessageBox.Show(mismatch);
+                    RefreshDerivedAvailability();
+                    return false;
+                }
+                model = DerivedModel;
+                return true;
+            }
+            try
+            {
+                model = FormworkMethods.StageModelCopy(RunQTO.doc);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(caller + " staging failed.", ex);
+
+                AppendLog("Staging FAILED: " + ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>Core jump form (both Locked/Unlocked state sets) +
+        /// pole-shore reshoring - one child pass on the selected model
+        /// copy. Same gates as Generate: freshness stamp at click time,
+        /// early child-running refusal BEFORE the staging side effect,
+        /// derived-model sidecar validation. The live document is never
+        /// touched (REVERT invariant).</summary>
+        private void GenerateJumpForm_Clicked(object sender, RoutedEventArgs e)
+        {
+            if (!EnsureFresh())
+            {
+                return;
+            }
+            if (FormworkMethods.ChildRunning)
+            {
+                AppendLog("Another child Rhino run (preview checkup or formwork) is in " +
+                    "progress - try GENERATE JUMP FORM again when it finishes.");
+                Logger.Info("Jump form refused: another child Rhino run is in progress.");
+                return;
+            }
+            string model;
+            if (!TryPickInputModel("Jump form", out model))
+            {
+                return;
+            }
+            // Disk-truth protocol: pre-delete the fixed-name outputs so the
+            // success line can only ever describe THIS run's files. A locked
+            // previous output (open for inspection in the second Rhino) must
+            // refuse now - a clean child exit would otherwise leave the stale
+            // .3dm sitting under a fresh success message.
+            string out3dm = Path.Combine(Stage, "jumpform_out.3dm");
+            string outJson = Path.Combine(Stage, "jumpform_out.json");
+            try
+            {
+                if (File.Exists(out3dm)) { File.Delete(out3dm); }
+                if (File.Exists(outJson)) { File.Delete(outJson); }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("Jump form refused: staging output locked - " + ex.Message);
+                AppendLog("Jump form refused: close jumpform_out.3dm in the other " +
+                    "Rhino first (" + ex.Message + ")");
+                return;
+            }
+            AppendLog("--- generate jump form + reshoring (child Rhino) ---");
+            RunChildAsync(model, "run_jumpform_on_model.py", null,
+                "jumpform_model_log.txt", "jumpform_model_error.txt",
+                () => AppendLog(File.Exists(out3dm)
+                    ? "Output: jumpform_out.3dm (+ JSON) in " + Stage
+                    : "Engine exited clean but wrote NO jumpform_out.3dm - " +
+                      "check the log above (no core walls matched the layer " +
+                      "filters?)"));
         }
 
         private void RunChildAsync(string modelPath, string scriptName,

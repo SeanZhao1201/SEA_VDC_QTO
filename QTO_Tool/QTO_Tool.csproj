@@ -57,6 +57,8 @@
     <EmbeddedResource Include="..\Formwork_Generation\rhino\split_pourbreaks.py" Link="Formwork\split_pourbreaks.py" LogicalName="QTO_Tool.Formwork.split_pourbreaks.py" />
     <EmbeddedResource Include="..\Formwork_Generation\rhino\run_on_model.py" Link="Formwork\run_on_model.py" LogicalName="QTO_Tool.Formwork.run_on_model.py" />
     <EmbeddedResource Include="..\Formwork_Generation\rhino\run_sideforms_on_model.py" Link="Formwork\run_sideforms_on_model.py" LogicalName="QTO_Tool.Formwork.run_sideforms_on_model.py" />
+    <EmbeddedResource Include="..\Formwork_Generation\rhino\jumpform_gen_rhino.py" Link="Formwork\jumpform_gen_rhino.py" LogicalName="QTO_Tool.Formwork.jumpform_gen_rhino.py" />
+    <EmbeddedResource Include="..\Formwork_Generation\rhino\run_jumpform_on_model.py" Link="Formwork\run_jumpform_on_model.py" LogicalName="QTO_Tool.Formwork.run_jumpform_on_model.py" />
     <EmbeddedResource Include="..\Formwork_Generation\rhino\breaksheet_gen.py" Link="Formwork\breaksheet_gen.py" LogicalName="QTO_Tool.Formwork.breaksheet_gen.py" />
     <EmbeddedResource Include="..\Formwork_Generation\rhino\breaksheet_import.py" Link="Formwork\breaksheet_import.py" LogicalName="QTO_Tool.Formwork.breaksheet_import.py" />
   </ItemGroup>

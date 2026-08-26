@@ -110,6 +110,11 @@
                                     Width="310" Height="60" FontSize="20" Margin="5"
                                     Click="OpenOutput_Clicked"/>
                         </StackPanel>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <Button Name="GenerateJumpFormButton" Content="GENERATE JUMP FORM + RESHORING"
+                                    Width="440" Height="52" FontSize="18" Margin="5"
+                                    Background="#98AD80" Click="GenerateJumpForm_Clicked"/>
+                        </StackPanel>
                         <Button Name="CancelRunButton" Content="CANCEL RUN" Width="200"
                                 Height="40" FontSize="16" Margin="5"
                                 HorizontalAlignment="Center" IsEnabled="False"

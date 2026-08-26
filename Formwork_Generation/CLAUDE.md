@@ -50,6 +50,18 @@ formwork for visualization and 4D sequencing, not engineered falsework design
   (2026-08-13): edge/opening classification by ray-cast suppression and
   neighbour probing, net formwork areas, generate/export/purge modes.
   See the Side forms section below and `rhino/README.md`.
+- `rhino/jumpform_gen_rhino.py`, `rhino/run_jumpform_on_model.py`,
+  `rhino/test_jumpform_headless.py` — the jump-form + reshoring engine
+  (2026-08-24, geometry per the Waverly reference model): one straight
+  form strip per core-wall FACE in BOTH schedule states (`Jump Form
+  Locked` hugging the face, `Jump Form Unlocked` retreated 1.2 m along
+  the face's own normal), vertical panels ONLY — no decks, no lap — and
+  a sparser ray-cast reshore lattice (`Pole Shore for Reshoring`,
+  FLOOR = the supported floor) under every slab. Same
+  generate/export/purge modes, same `_FORMWORK` tree (new FW_TYPEs
+  `jumpform`/`reshore`, own auto-purge whitelist). IFC via
+  `formwork_ifc_from_json.py --jumpforms`. See "Jump form + reshoring"
+  below and the design record `../docs/jumpform-design.md`.
 - `rhino/breaksheet_gen.py`, `rhino/breaksheet_import.py`,
   `rhino/test_breaksheet_headless.py` — the BREAK SHEET authoring surface
   (P1, 2026-08-17): generates a plan-cell sheet (one cell per
@@ -115,6 +127,35 @@ IfcBuilding → IfcBuildingStorey`; per floor one `IfcElementAssembly` of
 `IfcBuildingElementProxy` (`ObjectType` = `platform` | `support`); every
 element tagged with **`QTO Properties.FLOOR`** (the join key for 4D search
 sets); geometry as `IfcExtrudedAreaSolid` in absolute mm.
+
+> **Merge mode (2026-08-24).** `formwork_ifc_from_json.py --into
+> <takeoff.ifc>` appends the temp works INTO the QTO take-off IFC instead
+> of authoring a fresh spatial tree: each assembly is contained in the
+> EXISTING `IfcBuildingStorey` whose `Name` equals the element's FLOOR
+> (both vocabularies come from `FloorElevations`), reusing the file's
+> plain Model context — one file, one storey tree, zero transforms. The
+> take-off entities are never modified; the STEP header is restamped
+> with the merge's own provenance. Loud aborts BEFORE writing: bad/
+> non-IFC4/non-mm `--into`, duplicate storey Names, FLOOR without a
+> storey, `--out`==`--into`, a target that already contains temp works
+> (re-merge would silently double everything), zero elements produced,
+> and any `WALL_GLOBALID`/`SLAB_GLOBALID` that does not resolve inside
+> the target file — the only mechanical catch for stale JSONs merged
+> into a re-split take-off, since floor names repeat across generations.
+> All guards pinned by `test_ifc_merge.py` (20 asserts, pure CPython in
+> the qto_fwenv venv — no Rhino needed).
+
+> **Element identity — `QTO_STABLE_ID` (2026-08-23).** The QTO checkup
+> deletes and re-adds every solid, re-minting `obj.Id` on every run, so the
+> object id alone cannot link the two exports. The checkup stamps each
+> object's FIRST-seen id into the `QTO_STABLE_ID` user string (preserved on
+> re-checkups; attributes survive the re-add), `split_pourbreaks` stamps
+> every pour piece with its own new id, and `formwork_gen_rhino._ident`
+> prefers a valid-GUID stamp over `obj.Id` — the same preference the QTO
+> exporter's `SetDeterministicGlobalId` applies. `SLAB_GLOBALID` is the
+> ifcopenshell `guid.compress` of that identity, so it resolves directly to
+> the take-off IFC's `IfcGlobalId` (verified 67/67 on the Bellwether derived
+> model, 2026-08-23). Never copy a `QTO_STABLE_ID` onto a new object.
 
 > **Floor-naming — the most likely integration snag.** `--floors` selection and
 > floor ordering assume labels of the form **`L<digits>`** (`L01`…`L16`), with
@@ -324,6 +365,70 @@ elements group per pour piece (one assembly per POUR block) so 4D strike semanti
 fall out of the containment tree; kicker/edge details — likely rejected as
 over-fidelity.
 
+## Jump form + reshoring — decided and built 2026-08-24
+
+The core climbing works engine, filling the 270 unbound Mast4D animation
+slots (`Jump Form Locked` 120, `Jump Form Unlocked` 60, `Pole Shore for
+Reshoring` 90). The 2026-08-12 side-form scope note "wall and column
+faces are out of scope — they belong to a different formwork system"
+still holds for sideform_gen; the CORE walls' system is now THIS engine.
+Design record with the primary-source schedule semantics:
+`../docs/jumpform-design.md`. Contract points a future editor must not
+break:
+
+- **Both states are separate geometry per bank per lift** — schedule
+  activity 2020 Installs Unlocked while Removing Locked in one task;
+  equality-bound search sets cannot re-task one element. Element Names
+  are the schedule vocabulary verbatim and never vary by floor; FLOOR /
+  STATE / BANK / WALL_GLOBALID live in `QTO Properties`.
+- **Vertical panels ONLY — a core jump form has NO horizontal decks and
+  NO downward lap** (user field correction 2026-08-24, measured on the
+  Waverly reference SKP: zero horizontal geometry in its jump-form
+  groups; `Flyable Deck` is the slab table, a different component).
+  Strip z runs lift base → `form_top_drop` (0.35 m) below the lift top.
+- **One straight strip per wall FACE, retreat along the face's own
+  normal** — the Waverly convention: LOCKED hugs the face, UNLOCKED is
+  the same strip 1.2 m off it (exterior faces outward, shaft faces INTO
+  the shaft), z identical in both states; the climb is animated purely
+  by floor-set visibility.
+- **Reshore `FLOOR` names the floor the shore SUPPORTS** (its head bears
+  on that slab's soffit) — identical to the props' existing semantics.
+  Since the 2026-08-24 zone decisions it also inherits the supported
+  slab piece's `POUR` (blank under an un-zoned slab — never invented),
+  and Reshoring/Formwork-Sides assemblies split per pour in the IFC.
+  Zone naming rule, decided with primary sources: element names stay
+  GENERIC — zones live in `QTO Properties.POUR` and assembly names
+  ("Pour" vocabulary). The splitter's pass 4 additionally tags COLUMNS
+  with the pour of the deck solid holding their plan centroid
+  (attributes only; see `split_pourbreaks.py`).
+- **Each face's away side is resolved by membership probes at the
+  SECTION-CUT height, at probe scale.** At roll_back both sides of a
+  0.3–0.46 m wall are void, and at mid-lift height the probes land in
+  doorway voids (that silently cost 18 strips on the first field run);
+  a wrong-side strip is worse than no strip, so an unresolvable side
+  skips LOUDLY (`skipped_bands` stat + warning).
+- **A LIFT is a base elevation, not a wall solid** — a core modeled as
+  two disjoint runs per storey must not double the lift ladder.
+- Banks cluster by plan overlap, lettered by DESCENDING plan area (the
+  big core is always A).
+- The C# handler judges the run by DISK: `jumpform_out.3dm/.json` are
+  pre-deleted at click (a locked previous output refuses pre-launch),
+  and the success line requires the .3dm to exist.
+
+- **The retreat CORRIDOR must be void** (`_strip_clear`): a slot
+  narrower than roll_back cannot take the unit — the strip refuses
+  loudly instead of burying in (or teleporting past) the opposite
+  wall. Section cuts take the FIRST successful height, high-to-low —
+  a "more loops wins" preference inverts on doorway-severed non-ring
+  walls.
+
+Verified 2026-08-24 (post-rework): 54-assert headless suite ALL PASS in
+real Rhino 8; Bellwether field run banks A:19/B:18 lifts, 324+322
+strips (2 genuine narrow-void refusals on R1, loud), 861 reshores;
+WALL_GLOBALID 37/37 and reshore SLAB_GLOBALID 48/48 resolve against
+the take-off IFC; hardened by three adversarial reviews. Numbers and
+residuals: the repo-level CLAUDE.md Development status.
+
 ## Pour-break authoring — decided and built 2026-08-13
 
 The original pour-break pass was reverse-engineered from one PDF: markups →
@@ -484,6 +589,42 @@ C#-side, pinned where Python is involved (60-assert headless suite):**
 
 The original GetPoint-authoring idea stays superseded by the sheet. The
 layer path below remains the power-user back door feeding the same JSON.
+
+**What the sheet's locked furniture is, and is not (2026-08-20, from a
+field question — "the reference lines don't always match that floor").**
+The furniture is a *drawing reference*, not a survey of the floor. Four
+documented reasons it can differ from the real level, in the order they
+actually bite:
+
+1. **A TYP cell draws its REPRESENTATIVE member only.** Exactly-identical
+   floors are safe by construction (byte-identical quantized fingerprints).
+   A *user-directed* near-TYP merge is not: the generator logs
+   `MERGED per user directive: … representative 'X' - its footprint is the
+   one drawn`, and every non-representative member differs by however many
+   vertices the NEAR-TYP line reported. On the Bellwether the modeller
+   merged L07…L16 into one cell whose members differ by 4 of 46 vertices,
+   so L11–L15 are drawn with L07's outline. Supports differ more often than
+   outlines and get their own per-member `NOTE:` line.
+2. **Supports are bounding-box rectangles**, not true sections — placeholder
+   fidelity, same as the formwork generator's prop proxies. A diagonal or
+   L-shaped core wall shows as one rectangle.
+3. **Only pour-break slab targets are drawn** (`SLAB_EXCLUDE`). Topping is
+   excluded, so a floor with toppings — L01 has eight — is drawn with less
+   area than it physically has. SOG *is* drawn since 2026-08-20.
+4. **Supports are collected in a band** `SUPPORT_BAND_M = 3.0 m` below the
+   floor top; anything stopping lower is not shown.
+
+Explicitly NOT a cause on the Bellwether: sloped or stepped slab tops. All
+56 pour-break slab targets were measured 2026-08-20 — every top face is
+planar (max tilt 0.00 deg, zero Z-span) and every slab's up-faces sit at a
+single level. Ramps remain out of scope for the formwork generator, which
+warns per face when a soffit spans Z; the sheet has no equivalent warning
+because no model has needed one yet.
+
+The reliable reference for drawing against is the **slab outline** (it is
+osnap-able and exact for the representative floor); treat supports as
+indicative. When a merged TYP cell matters, un-merge it in the MAKE dialog
+and draw that floor on its own cell.
 
 **Cut semantics v2:** a break is a **plan polyline — any orientation, jogs
 allowed** (routing around openings is normal practice); arbitrary planar curves

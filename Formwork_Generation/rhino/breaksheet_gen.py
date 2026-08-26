@@ -69,7 +69,7 @@ LOG_FILE = os.path.join(STAGE, "breaksheet_log.txt")
 SLAB_KEYWORD = "slab"
 # Same excludes as split_pourbreaks.PARAMS: a cell for a slab the splitter
 # will never cut would invite breaks that silently do nothing.
-SLAB_EXCLUDE = ("sog", "topping")
+SLAB_EXCLUDE = ("topping",)   # MUST track split_pourbreaks.PARAMS
 SUPPORT_KEYWORDS = ("wall", "column")
 UP_DOT = 0.94                  # cos(20 deg) - same top-face cutoff as QTO
 FP_QUANT_M = 0.01              # fingerprint vertex quantization (metres)
@@ -186,10 +186,15 @@ def collect_floors(doc, log):
                 face = brep.Faces[i]
                 dom_u = face.Domain(0)
                 dom_v = face.Domain(1)
+                # BrepFace.NormalAt already returns the OUTWARD face normal
+                # (the OrientationIsReversed flip is applied internally) -
+                # the same fact formwork_gen_rhino._downward_faces records.
+                # Flipping again silently deletes every top face whose flag
+                # happens to be set: on the real Bellwether model that was 46
+                # of 49 PT slabs, and the sheet came out with 3 cells for 19
+                # floors under a clean log (2026-08-19).
                 normal = face.NormalAt(dom_u.Mid, dom_v.Mid)
                 normal.Unitize()
-                if face.OrientationIsReversed:
-                    normal = -normal
                 if normal.Z <= UP_DOT:
                     continue
                 outer = None

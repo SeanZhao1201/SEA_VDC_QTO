@@ -62,7 +62,23 @@ from pourbreak_harvest import is_pb_layer
 
 PARAMS = {
     "slab_layer_keyword": "slab",           # first '_' segment must contain
-    "slab_layer_exclude": ["sog", "topping"],
+    # POUR-BREAK filter - deliberately WIDER than the formwork one.
+    # A slab on grade has no soffit and no shoring, but it is very much a
+    # real pour with real construction joints, so it belongs here (asked
+    # for on the Bellwether podium 2026-08-20, where L01 is part suspended
+    # / part on grade and P1 is SOG-only). Topping stays out: it is poured
+    # on an existing deck and overlaps it in plan (measured on that model:
+    # 6 of 8 toppings sit 100% inside a PT slab's footprint), so including
+    # it would double-draw the cell and double-count the advisory areas.
+    # formwork_gen_rhino / sideform_gen_rhino keep ["sog", "topping"] -
+    # nothing shores a slab on grade. Do not re-merge the two lists.
+    "slab_layer_exclude": ["topping"],
+    # Columns inherit the pour zone they stand in (decided 2026-08-24):
+    # first '_' segment must contain this to be tagged. Attributes only -
+    # the column keeps its layer, its name and its geometry; the zone is
+    # the POUR user string, mirrored into "QTO Properties" by the QTO
+    # exporter exactly like the deck's. None/"" disables the pass.
+    "column_layer_keyword": "column",
     "extensions_m": (5.0, 20.0, 50.0),      # progressive end extension
     "min_dir_m": 0.05,                      # end-direction sampling chord —
                                             # snap-noise micro segments must
@@ -243,6 +259,33 @@ def point_in_piece(piece, px, py, tol):
         return piece.IsPointInside(pt, tol, False)
     except Exception:
         return False
+
+
+def marker_claim(brep, markers, tol):
+    """(pour, all_pours) of the dot(s) sitting inside an UNCUT slab.
+
+    The closure strip on every Bellwether floor is a separate small slab
+    that no break line crosses, so it reached the derived model with no
+    POUR at all - and a downstream 4D binder that matches on property
+    EQUALITY cannot select "blank" (Mast4D, 2026-08-20). Rather than
+    invent a token in the exporter, the MODELLER declares it: drop a
+    numbered dot on that slab in the break sheet and it is claimed here,
+    exactly like a split piece. Lowest number wins when a slab holds
+    several; the caller says so out loud.
+    """
+    hits = []
+    for mk in markers or []:
+        if mk.get("pour") is None:
+            continue
+        try:
+            mx, my = float(mk["at"][0]), float(mk["at"][1])
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+        if point_in_piece(brep, mx, my, tol):
+            hits.append(mk["pour"])
+    if not hits:
+        return None, []
+    return min(hits), sorted(set(hits))
 
 
 def interior_plan_point(piece, tol):
@@ -657,6 +700,7 @@ def split_document(doc, data, params=None, log=None):
 
     # pass 1 — split everything, remember pieces; no doc mutation yet
     pending = []        # (obj, layer, fl, srec, [piece dicts])
+    claims = []         # (obj, fl, pour, all_pours, srec) - uncut, dot-claimed
     floor_pieces = {}   # fl -> every piece dict on that floor
     floor_soffits = {}  # fl -> soffit elevations seen (support review)
     for obj, brep, layer in targets:
@@ -677,6 +721,9 @@ def split_document(doc, data, params=None, log=None):
         markers = (cfg or {}).get("pour_markers") or []
         if not breaks:
             srec["status"] = "no break for floor"
+            claimed, all_hits = marker_claim(brep, markers, tol)
+            if claimed is not None:
+                claims.append((obj, fl, claimed, all_hits, srec))
             continue
         why = []
         pieces, ok = split_with_breaks(brep, breaks, markers, ext_ladder,
@@ -684,6 +731,9 @@ def split_document(doc, data, params=None, log=None):
         srec["why"] = why
         if not ok:
             srec["status"] = "not crossed"
+            claimed, all_hits = marker_claim(brep, markers, tol)
+            if claimed is not None:
+                claims.append((obj, fl, claimed, all_hits, srec))
             continue
         srec["status"] = "split into {0}".format(len(pieces))
         rec_pieces = []
@@ -748,6 +798,11 @@ def split_document(doc, data, params=None, log=None):
             attr.SetUserString("POUR", str(pour))
             attr.SetUserString("POUR_FLOOR", fl)
             attr.SetUserString("SOURCE_SLAB", source_id)
+            # the parent's checkup-surviving stable id must NOT ride onto the
+            # pieces: sibling pieces would collide on it and the take-off IFC
+            # could not tell them apart; each piece gets its OWN id stamped
+            # right after the add below (SOURCE_SLAB keeps the parentage)
+            attr.SetUserString("QTO_STABLE_ID", None)
             new_id = doc.Objects.AddBrep(rec["brep"], attr)
             if new_id == System.Guid.Empty:
                 add_failed = True
@@ -781,6 +836,24 @@ def split_document(doc, data, params=None, log=None):
                     "model)"))
             continue
 
+        # Stamp each piece with its own id as the checkup-surviving identity:
+        # the formwork generator and the QTO IFC export both derive the
+        # cross-export id from QTO_STABLE_ID, and the take-off session's
+        # checkup preserves an existing stamp instead of re-minting. A failed
+        # stamp is harmless - with no stamp, both sides fall back to the same
+        # object id - so it only warns.
+        for aid in added_ids:
+            pobj = doc.Objects.FindId(aid)
+            if pobj is None:
+                continue
+            pattr = pobj.Attributes.Duplicate()
+            pattr.SetUserString("QTO_STABLE_ID", str(aid))
+            if not doc.Objects.ModifyAttributes(pobj, pattr, True):
+                log("  WARNING: {0}/{1}: piece {2} could not be stamped with "
+                    "QTO_STABLE_ID; the take-off export falls back to the "
+                    "same object id, links still resolve".format(
+                        fl, layer.Name, aid))
+
         # bookkeeping only after every piece verifiably landed
         for rec in rec_pieces:
             pour = rec["pour"] if rec["pour"] is not None else 0
@@ -802,6 +875,133 @@ def split_document(doc, data, params=None, log=None):
                 tot["vol"] = round(tot["vol"] + vm.Volume, 1)
         n_cut += 1
     log("split {0} slabs".format(n_cut))
+
+    # Uncut slabs claimed by a pour dot: ATTRIBUTES ONLY, deliberately.
+    # The slab was never cut, so it is not deleted, not re-added and not
+    # moved to a _POUR layer - and srec["status"] keeps saying "not
+    # crossed". Only srec["claimed_pour"] and the POUR user string are
+    # added, which is exactly what the formwork generator and the IFC
+    # exporters read.
+    n_claimed = 0
+    for obj, fl, pour, all_hits, srec in claims:
+        if len(all_hits) > 1:
+            log("  NOTE: {0}/{1}: uncut slab holds dots for pours {2} - "
+                "claiming the lowest ({3}); split it if they are meant to "
+                "be separate pours".format(
+                    fl, srec["layer"],
+                    ", ".join(str(h) for h in all_hits), pour))
+        attr = obj.Attributes.Duplicate()
+        attr.SetUserString("POUR", str(pour))
+        attr.SetUserString("POUR_FLOOR", fl)
+        if doc.Objects.ModifyAttributes(obj, attr, True):
+            srec["claimed_pour"] = pour
+            n_claimed += 1
+        else:
+            log("  WARNING: {0}/{1}: could not tag the uncut slab with "
+                "POUR {2} - it stays untagged".format(
+                    fl, srec["layer"], pour))
+    if n_claimed:
+        log("{0} uncut slab(s) claimed by a pour dot".format(n_claimed))
+
+    # pass 4 - columns inherit the pour zone they stand in (decided
+    # 2026-08-24). ATTRIBUTES ONLY: the column is never cut, never moved
+    # off its layer, and its name stays generic - the zone lives in the
+    # POUR user string, which the QTO exporter mirrors into
+    # "QTO Properties" the same way it does for the deck. Assignment is
+    # plan-centroid containment against this floor's POUR-tagged deck
+    # solids (split pieces AND dot-claimed uncut slabs, read back from
+    # the document so both are treated identically); a column riding the
+    # break line goes to whichever side holds its centroid, and one
+    # outside every deck footprint (an edge column) takes the NEAREST
+    # deck's pour - counted separately in the report. NOTE the schedule
+    # pours all columns of a floor in one activity and Mast4D asked for
+    # no column tags: this tag serves per-zone quantity rollups and a
+    # future zoned schedule, and is harmless to FLOOR+name binding.
+    col_kw = (p.get("column_layer_keyword") or "").lower()
+    n_col_tagged = n_col_untagged = 0
+    if col_kw:
+        deck_by_floor = {}
+        for obj in doc.Objects:
+            if obj is None or obj.Attributes is None:
+                continue
+            li = obj.Attributes.LayerIndex
+            if is_pb_layer(doc, li) or fw._is_formwork_layer(doc, li):
+                continue
+            layer = doc.Layers[li]
+            lname = layer.Name if layer is not None else ""
+            if keyword not in lname.split("_")[0].lower():
+                continue
+            if any(kw and kw.lower() in lname.lower() for kw in excludes):
+                continue
+            pour = obj.Attributes.GetUserString("POUR")
+            pfl = obj.Attributes.GetUserString("POUR_FLOOR")
+            if not pour or pour == "0" or not pfl:
+                continue
+            geom = obj.Geometry
+            if isinstance(geom, Rhino.Geometry.Extrusion):
+                geom = geom.ToBrep(True)
+            if isinstance(geom, Brep):
+                deck_by_floor.setdefault(pfl, []).append((geom, pour))
+
+        def _col_rep(fl):
+            return floor_report(fl).setdefault(
+                "columns", {"tagged": 0, "nearest": 0, "untagged": 0,
+                            "by_pour": {}})
+
+        for obj in list(doc.Objects):
+            if obj is None or obj.Attributes is None:
+                continue
+            li = obj.Attributes.LayerIndex
+            if is_pb_layer(doc, li) or fw._is_formwork_layer(doc, li):
+                continue
+            layer = doc.Layers[li]
+            lname = layer.Name if layer is not None else ""
+            if col_kw not in lname.split("_")[0].lower():
+                continue
+            geom = obj.Geometry
+            if isinstance(geom, Rhino.Geometry.Extrusion):
+                geom = geom.ToBrep(True)
+            if not isinstance(geom, Brep):
+                continue
+            bb = geom.GetBoundingBox(True)
+            fl = floor_of(bb.Min.Z)
+            decks = deck_by_floor.get(fl)
+            if not decks:
+                # a floor with no tagged deck (no breaks, no claims -
+                # e.g. the single-pour P1) leaves its columns untagged
+                n_col_untagged += 1
+                _col_rep(fl)["untagged"] += 1
+                continue
+            vm = VolumeMassProperties.Compute(geom)
+            cx = vm.Centroid.X if vm else (bb.Min.X + bb.Max.X) / 2.0
+            cy = vm.Centroid.Y if vm else (bb.Min.Y + bb.Max.Y) / 2.0
+            hits = sorted(set(pr for g, pr in decks
+                              if point_in_piece(g, cx, cy, tol)))
+            how = "inside"
+            if hits:
+                pour = hits[0]
+            else:
+                pour = min(decks, key=lambda gp: _dist_xy_to_box(
+                    cx, cy, gp[0].GetBoundingBox(True)))[1]
+                how = "nearest"
+            attr = obj.Attributes.Duplicate()
+            attr.SetUserString("POUR", str(pour))
+            attr.SetUserString("POUR_FLOOR", fl)
+            if doc.Objects.ModifyAttributes(obj, attr, True):
+                n_col_tagged += 1
+                crep = _col_rep(fl)
+                crep["tagged"] += 1
+                if how == "nearest":
+                    crep["nearest"] += 1
+                crep["by_pour"][str(pour)] = \
+                    crep["by_pour"].get(str(pour), 0) + 1
+            else:
+                log("  WARNING: {0}: column could not be tagged with "
+                    "POUR {1}".format(fl, pour))
+    if n_col_tagged or n_col_untagged:
+        log("{0} column(s) tagged with their pour zone, {1} left "
+            "untagged (no zoned deck on their floor)".format(
+                n_col_tagged, n_col_untagged))
 
     # review metrics per floor
     for fl, frep in report["floors"].items():

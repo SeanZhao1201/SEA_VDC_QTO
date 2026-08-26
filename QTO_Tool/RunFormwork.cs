@@ -32,6 +32,14 @@ namespace QTO_Tool
 
         protected override Result RunCommand(RhinoDoc doc, RunMode mode)
         {
+            // Same refusal as RunQTO: FormworkUI reads JSON stamps at load, so
+            // a partial install would crash the window open instead of naming
+            // the missing files.
+            if (!DependencyPreflight.Check())
+            {
+                return Result.Failure;
+            }
+
             if (RunQTO.doc == null || RunQTO.doc.IsAvailable == false)
             {
                 RunQTO.doc = RhinoDoc.ActiveDoc;

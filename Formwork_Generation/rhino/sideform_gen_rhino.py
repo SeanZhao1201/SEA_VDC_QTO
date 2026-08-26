@@ -78,6 +78,9 @@ PARAMS = {
     "slope_tol": 0.02,           # soffit face z-span beyond this ->
                                  # sloped, out of scope, loud warning
     "slab_layer_keyword": "slab",
+    # FORMWORK filter - see formwork_gen_rhino: narrower than the
+    # pour-break one on purpose. (SOG edge forms are a separate question,
+    # deliberately not opened here.)
     "slab_layer_exclude": ["sog", "topping"],
     "include_hidden_obstacles": False,
     "lock_layers": True,

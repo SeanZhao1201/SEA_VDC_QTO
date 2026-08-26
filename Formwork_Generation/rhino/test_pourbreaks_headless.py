@@ -62,6 +62,10 @@ try:
     import pourbreak_harvest as pbh
     import pourbreak_restore as pbr
     import split_pourbreaks as pbs
+    # P4: the sheet generator's SLAB_EXCLUDE must track the splitter's -
+    # a cell for a slab the splitter will never cut invites breaks that
+    # silently do nothing, and the reverse loses a whole pour off the sheet
+    import breaksheet_gen as bsg
 except Exception:
     import traceback
     write_report(["IMPORT FAILURE", traceback.format_exc()])
@@ -144,9 +148,16 @@ def scrub(data):
 
 
 def pieces_with_pour(doc, floor):
+    """DECK pieces of a floor. Since pass 4 (2026-08-24) COLUMNS carry
+    POUR/POUR_FLOOR too, so the collector must filter to slab layers or
+    a tagged column would count as a phantom extra piece."""
     out = []
     for obj in doc.Objects:
         if obj is None or obj.Attributes is None:
+            continue
+        layer = doc.Layers[obj.Attributes.LayerIndex]
+        lname = layer.Name if layer is not None else ""
+        if "slab" not in lname.split("_")[0].lower():
             continue
         pour = obj.Attributes.GetUserString("POUR")
         if pour is None or obj.Attributes.GetUserString("POUR_FLOOR") != \
@@ -189,6 +200,15 @@ def main():
     add_box(doc, "Slab_L6", 0, 20, 0, 10, 18.0, 18.2)
     add_box(doc, "Slab_L7", 0, 3, 0, 3, 21.0, 21.2)
     add_box(doc, "Column_1", 4.8, 5.2, 7.8, 8.2, 3.2, 6.0)
+    # pass-4 column fixtures (pour-zone attribution, 2026-08-24):
+    # Column_1 doubles as the inside case - its centroid (5, 8) sits in
+    # L1's upper-left piece (POUR1). Column_2 stands OUTSIDE every L4
+    # deck footprint (x > 5) -> nearest piece's pour. Column_3 stands on
+    # P1, which has no breaks -> must stay untagged. Their tops are kept
+    # clear of every soffit support band so the support-review fixtures
+    # are undisturbed.
+    add_box(doc, "Column_2", 5.5, 5.9, 2.0, 2.4, 12.2, 14.5)
+    add_box(doc, "Column_3", 14.8, 15.2, 4.8, 5.2, 0.2, 2.5)
     doc.Strings.SetString("FloorElevations", json.dumps(
         {"0.2": "P1", "3.2": "L1", "6.2": "L2", "9.2": "L3",
          "12.2": "L4", "15.2": "L5", "18.2": "L6", "21.2": "L7"}))
@@ -325,11 +345,23 @@ def main():
     if report is None:
         return
 
+    # P4 (2026-08-20): the POUR-BREAK filter no longer excludes slabs on
+    # grade - a SOG has no soffit but it is a real pour with real
+    # construction joints. Only topping stays out (it is poured on an
+    # existing deck and overlaps it in plan). The FORMWORK filters stay
+    # wider; the two lists must NOT be re-merged.
+    pb_excl = [e.lower() for e in pbs.PARAMS["slab_layer_exclude"]]
+    fw_excl = [e.lower() for e in fw.PARAMS["slab_layer_exclude"]]
+    check("pour-break filter admits SOG", "sog" not in pb_excl)
+    check("pour-break filter still excludes topping", "topping" in pb_excl)
+    check("formwork filter still excludes SOG", "sog" in fw_excl)
+    check("break sheet tracks the splitter's excludes",
+          set(pb_excl) == set(e.lower() for e in bsg.SLAB_EXCLUDE))
     sog = [o for o in doc.Objects
            if o is not None and o.Attributes is not None
            and doc.Layers[o.Attributes.LayerIndex] is not None
            and doc.Layers[o.Attributes.LayerIndex].Name == "Slab_SOG"]
-    check("SOG slab untouched (layer exclude)", len(sog) == 1)
+    check("SOG on a floor without breaks stays whole", len(sog) == 1)
 
     p_l1 = pieces_with_pour(doc, "L1")
     p_l2 = pieces_with_pour(doc, "L2")
@@ -369,6 +401,62 @@ def main():
                  and o.Attributes.GetUserString("POUR") is None]
     check("L2 locked original deleted (no duplication)",
           len(leftovers) == 0, "{0} leftover".format(len(leftovers)))
+
+    # Every split piece carries the checkup-surviving identity stamp
+    # (QTO_STABLE_ID) equal to its OWN object id - never the parent's,
+    # which sibling pieces would collide on - and no two pieces share a
+    # stamp. This is what makes formwork SLAB_GLOBALID resolve in the
+    # take-off IFC (2026-08-23).
+    pieces_all = [o for o in doc.Objects
+                  if o is not None and o.Attributes is not None
+                  and o.Attributes.GetUserString("SOURCE_SLAB") is not None]
+    stamps = [o.Attributes.GetUserString("QTO_STABLE_ID")
+              for o in pieces_all]
+    check("every split piece stamped with its own id",
+          len(pieces_all) > 0 and all(
+              s == str(o.Id) for s, o in zip(stamps, pieces_all)),
+          "{0} pieces, bad: {1}".format(
+              len(pieces_all),
+              [str(o.Id) for s, o in zip(stamps, pieces_all)
+               if s != str(o.Id)][:3]))
+    check("piece stable ids are unique",
+          len(set(stamps)) == len(stamps),
+          "{0} stamps, {1} unique".format(len(stamps), len(set(stamps))))
+
+    # pass 4 - columns inherit the pour zone they stand in (2026-08-24):
+    # attributes only, name and layer untouched; a column outside every
+    # deck footprint takes the nearest piece's pour (reported as such);
+    # a floor with no zoned deck leaves its columns untagged
+    def col_on(lname):
+        for o in doc.Objects:
+            if o is not None and o.Attributes is not None:
+                lyr = doc.Layers[o.Attributes.LayerIndex]
+                if lyr is not None and lyr.Name == lname:
+                    return o
+        return None
+    c1 = col_on("Column_1")
+    c2 = col_on("Column_2")
+    c3 = col_on("Column_3")
+    check("column inside a piece inherits its POUR (L1 upper-left = 1)",
+          c1 is not None and
+          c1.Attributes.GetUserString("POUR") == "1" and
+          c1.Attributes.GetUserString("POUR_FLOOR") == "L1",
+          str(c1 and (c1.Attributes.GetUserString("POUR"),
+                      c1.Attributes.GetUserString("POUR_FLOOR"))))
+    check("column outside every deck takes the NEAREST piece's pour",
+          c2 is not None and
+          c2.Attributes.GetUserString("POUR") == "1" and
+          c2.Attributes.GetUserString("POUR_FLOOR") == "L4")
+    check("column on an unzoned floor stays untagged",
+          c3 is not None and
+          c3.Attributes.GetUserString("POUR") is None)
+    check("column report counts (tagged/nearest/untagged)",
+          report["floors"]["L1"]["columns"]["tagged"] == 1 and
+          report["floors"]["L4"]["columns"]["tagged"] == 1 and
+          report["floors"]["L4"]["columns"]["nearest"] == 1 and
+          report["floors"]["P1"]["columns"]["untagged"] == 1,
+          str(dict((fl, report["floors"].get(fl, {}).get("columns"))
+                   for fl in ("L1", "L4", "P1"))))
 
     # L3: arc cut — volume conserved, pieces real
     vols3 = [b.GetVolume() for _p, b, _o in p_l3]
@@ -444,8 +532,14 @@ def main():
     check("L7 slab reported unsplit (floor without breaks)",
           report["floors"].get("L7", {}).get("slabs", [{}])[0]
           .get("status") == "no break for floor")
-    check("P1 absent from report (SOG excluded outright)",
-          "P1" not in report["floors"])
+    # P4 (2026-08-20): P1 now REACHES the report - its SOG is a pour-break
+    # target - and is reported unsplit because that floor carries no breaks,
+    # exactly like L7. Before, the layer filter dropped it silently.
+    check("P1 reaches the report now that SOG is a target",
+          "P1" in report["floors"])
+    check("P1 SOG reported unsplit (floor without breaks)",
+          report["floors"].get("P1", {}).get("slabs", [{}])[0]
+          .get("status") == "no break for floor")
 
 
 try:

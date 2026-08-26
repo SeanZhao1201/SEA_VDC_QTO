@@ -104,6 +104,8 @@ namespace QTO_Tool
             int ignoredObjCount = 0;
             int lockedObjCount = 0;
             int skippedObjCount = 0;
+            int stampedObjCount = 0;
+            int restampedObjCount = 0;
 
             List<Brep> surfaceList = new List<Brep>();
             List<Guid> addedObjectIds = new List<Guid>();
@@ -239,6 +241,16 @@ namespace QTO_Tool
 
                         if (obj.IsValid)
                         {
+                            // Stamp the checkup-surviving identity BEFORE the rebuild:
+                            // every copy below is added with this same attributes
+                            // instance, so the stamp rides onto whatever replaces the
+                            // original. An existing stamp is preserved - obj.Id is
+                            // re-minted by every checkup, the stamp is what stays.
+                            if (Methods.EnsureStableId(obj))
+                            {
+                                stampedObjCount++;
+                            }
+
                             objectHandled = Methods.PrepareObject(obj, obj.Attributes, surfaceList, addedObjectIds);
                         }
                         else
@@ -380,6 +392,16 @@ namespace QTO_Tool
                         try { Methods.AddBadGeometry(joinedBrep.Brep, joinedBrep.Attributes); } catch { }
                     }
                 }
+
+                // Duplicate stable ids would become duplicate IfcGlobalIds
+                // (schema-invalid) and ambiguous 4D links. Sources: one object
+                // fanning out into several solids (joined shells, block pieces)
+                // - every copy was added with the source's attributes - and
+                // user copy-paste, which clones user strings. Keep the stamp on
+                // a closed solid first, then the first holder in document
+                // order; re-stamp the rest with their own ids. Runs inside the
+                // undo record like every other mutation of this checkup.
+                restampedObjCount = Methods.RestampDuplicateStableIds();
             }
             finally
             {
@@ -392,8 +414,12 @@ namespace QTO_Tool
             // Rhino discards an empty undo record while its serial stays consumed,
             // so the UI's topmost-record check would still pass and Undo() would pop
             // the user's own previous action. A run that changed no document object
-            // therefore reports no revertable record.
-            if (solidObjCount == 0 && invalidObjCount == 0 && badGeometryCount == 0)
+            // therefore reports no revertable record. Stamp and re-stamp commits
+            // are document mutations too: a run that only wrote stable ids leaves
+            // a NON-empty record, so it must keep its serial or the user's next
+            // Ctrl+Z would silently pop the invisible stamps.
+            if (solidObjCount == 0 && invalidObjCount == 0 && badGeometryCount == 0 &&
+                stampedObjCount == 0 && restampedObjCount == 0)
             {
                 checkupUndoRecordSerial = 0;
             }
@@ -437,7 +463,9 @@ namespace QTO_Tool
             Logger.Info("Checkup summary: " + solidObjCount + " solids, " + invalidObjCount + " invalid, " +
                 badGeometryCount + " bad, " + ignoredObjCount + " ignored (non-takeoff), " + lockedObjCount +
                 " locked, " + hiddenObjCount + " hidden (unchecked), " + skippedObjCount + " skipped, " +
-                joinedBreps.Count + " joined breps, of " + docObjects.Count + " objects.");
+                joinedBreps.Count + " joined breps, of " + docObjects.Count + " objects. " +
+                stampedObjCount + " objects newly stamped with " + StableIdKey +
+                ", " + (docObjects.Count - stampedObjCount) + " kept an existing or no stamp.");
 
             RunQTO.doc.Views.Redraw();
 
@@ -488,6 +516,197 @@ namespace QTO_Tool
             }
 
             addedObjectIds.Clear();
+        }
+
+        /// <summary>
+        /// Key of the per-object user string that survives the checkup's
+        /// delete-and-re-add cycle (attributes ride onto the copies) and is the
+        /// identity the IFC export derives IfcGlobalId from. obj.Id itself is
+        /// re-minted by every checkup (verified 2026-08-23: all 811 ids of the
+        /// Bellwether derived model changed in one run), so it cannot serve as
+        /// a cross-export id on its own.
+        /// </summary>
+        public const string StableIdKey = "QTO_STABLE_ID";
+
+        /// <summary>
+        /// Stamps the object with its own id as the stable identity unless a
+        /// usable stamp is already present. The first checkup of a file
+        /// therefore stamps the FILE ids - the same ids the formwork generator
+        /// reads - and every later checkup preserves them. Returns true when a
+        /// new stamp was written. Never throws; a failed stamp only means the
+        /// IFC export falls back to the (session-local) object id.
+        /// </summary>
+        internal static bool EnsureStableId(RhinoObject obj)
+        {
+            try
+            {
+                string existing = obj.Attributes.GetUserString(StableIdKey);
+
+                Guid parsed;
+                if (!string.IsNullOrWhiteSpace(existing) && Guid.TryParse(existing, out parsed) && parsed != Guid.Empty)
+                {
+                    return false;
+                }
+
+                if (!string.IsNullOrWhiteSpace(existing))
+                {
+                    Logger.Warn("Checkup: object " + obj.Id + " carried an unusable " + StableIdKey +
+                        " ('" + existing + "'); re-stamped with its own id.");
+                }
+
+                obj.Attributes.SetUserString(StableIdKey, obj.Id.ToString());
+
+                if (!obj.CommitChanges())
+                {
+                    Logger.Warn("Checkup: stamping " + StableIdKey + " on object " + obj.Id +
+                        " did not commit; the IFC export will fall back to its object id.");
+
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("Checkup: could not stamp " + StableIdKey + " on object " + obj.Id + " - " + ex.Message);
+
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Re-stamps every take-off object whose stable id another object
+        /// already holds, and returns how many were re-stamped. The keeper is
+        /// chosen with a preference for CLOSED SOLIDS (pass 1) before falling
+        /// back to document order (pass 2): a join or block explode fans one
+        /// source's attributes onto several outputs, and without the
+        /// preference a red open shell added before its solid sibling would
+        /// keep the 4D-linked stamp while the verified solid churned. Never
+        /// throws; an object that cannot be re-stamped is reported and left
+        /// for the IFC export's own duplicate guard.
+        /// </summary>
+        static int RestampDuplicateStableIds()
+        {
+            int restampedCount = 0;
+
+            try
+            {
+                Dictionary<string, Guid> seen = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    foreach (RhinoObject obj in RunQTO.doc.Objects)
+                    {
+                        if (obj.IsDeleted)
+                        {
+                            continue;
+                        }
+
+                        string typeName = obj.GetType().Name;
+
+                        if (typeName != "BrepObject" && typeName != "ExtrusionObject" &&
+                            typeName != "MeshObject" && typeName != "InstanceObject")
+                        {
+                            continue;
+                        }
+
+                        if (pass == 0 && !Methods.IsClosedSolidGeometry(obj))
+                        {
+                            continue;
+                        }
+
+                        string stamp = null;
+                        try { stamp = obj.Attributes.GetUserString(StableIdKey); } catch { }
+
+                        if (string.IsNullOrWhiteSpace(stamp))
+                        {
+                            continue;
+                        }
+
+                        if (!seen.ContainsKey(stamp))
+                        {
+                            seen.Add(stamp, obj.Id);
+                            continue;
+                        }
+
+                        if (seen[stamp] == obj.Id)
+                        {
+                            // the keeper itself, met again on pass 2
+                            continue;
+                        }
+
+                        if (pass == 0)
+                        {
+                            // solid-vs-solid duplicates resolve on pass 2 in
+                            // document order, like every other duplicate
+                            continue;
+                        }
+
+                        try
+                        {
+                            obj.Attributes.SetUserString(StableIdKey, obj.Id.ToString());
+
+                            if (obj.CommitChanges())
+                            {
+                                restampedCount++;
+
+                                Logger.Warn("Checkup: objects " + seen[stamp] + " and " + obj.Id + " shared stable id '" +
+                                    stamp + "' (fan-out or copy-paste); " + obj.Id + " was re-stamped with its own id.");
+                            }
+                            else
+                            {
+                                Logger.Warn("Checkup: re-stamping duplicate stable id '" + stamp + "' on object " +
+                                    obj.Id + " did not commit - the IFC export will fall back to its object id.");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Warn("Checkup: could not re-stamp duplicate stable id '" + stamp + "' on object " +
+                                obj.Id + " - the IFC export will fall back to its object id. (" + ex.Message + ")");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("Checkup: duplicate stable-id pass failed - " + ex.Message);
+            }
+
+            return restampedCount;
+        }
+
+        /// <summary>
+        /// True for geometry the checkup would count as a verified solid:
+        /// closed Breps and Extrusions, closed Meshes. Block instances and
+        /// open shells return false. Never throws.
+        /// </summary>
+        static bool IsClosedSolidGeometry(RhinoObject obj)
+        {
+            try
+            {
+                Brep brep = obj.Geometry as Brep;
+                if (brep != null)
+                {
+                    return brep.IsSolid;
+                }
+
+                Extrusion extrusion = obj.Geometry as Extrusion;
+                if (extrusion != null)
+                {
+                    return extrusion.IsSolid;
+                }
+
+                Mesh mesh = obj.Geometry as Mesh;
+                if (mesh != null)
+                {
+                    return mesh.IsClosed;
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
         }
 
         /// <summary>

@@ -124,6 +124,8 @@ namespace QTO_Tool
             "split_pourbreaks.py",
             "run_on_model.py",
             "run_sideforms_on_model.py",
+            "jumpform_gen_rhino.py",
+            "run_jumpform_on_model.py",
             "breaksheet_gen.py",
             "breaksheet_import.py",
         };

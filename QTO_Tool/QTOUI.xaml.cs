@@ -15,6 +15,7 @@ using Xbim.Ifc;
 using Xbim.Ifc4.ProductExtension;
 using System.Windows.Media;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 
 namespace QTO_Tool
 {
@@ -2054,49 +2055,7 @@ namespace QTO_Tool
 
                     Logger.Info("IFC export started: " + outputPath);
 
-                    IFCMethods.SkippedMeshElements.Clear();
-
-                    // The IfcProject carries the document file name only; the full path
-                    // would leak the local folder structure into shared files.
-                    string ifcProjectName = System.IO.Path.GetFileNameWithoutExtension(RunQTO.doc.Name);
-
-                    if (String.IsNullOrWhiteSpace(ifcProjectName))
-                    {
-                        ifcProjectName = "QTO Project";
-                    }
-
-                    IfcStore project = IFCMethods.CreateandInitIFCModel(ifcProjectName);
-
-                    IfcBuilding building = IFCMethods.CreateBuilding(project, "Building");
-
-                    AllTemplates[] templateContainers = new AllTemplates[]
-                    {
-                        this.allWalls, this.allBeams, this.allColumns, this.allContinuousFootings,
-                        this.allFootings, this.allSlabs, this.allCurbs, this.allStyrofoams, this.allStairs
-                    };
-
-                    // Union of the floor-name bucket keys across all containers, so
-                    // every bucket (including "-") can be routed to a storey.
-                    HashSet<string> floorNamesInUse = new HashSet<string>();
-
-                    foreach (AllTemplates templateContainer in templateContainers)
-                    {
-                        floorNamesInUse.UnionWith(templateContainer.allTemplates.Keys);
-                    }
-
-                    Dictionary<string, IfcBuildingStorey> storeysByFloorName = IFCMethods.CreateBuildingStoreys(
-                        project, building, ElevationInput.floorElevations, floorNamesInUse);
-
-                    Logger.Info("IFC export: " + storeysByFloorName.Count + " storeys created for floor buckets: " + String.Join(", ", storeysByFloorName.Keys));
-
-                    foreach (AllTemplates templateContainer in templateContainers)
-                    {
-                        IFCMethods.CreateAndAddIFCElement(project, storeysByFloorName, templateContainer);
-
-                        Logger.Info("IFC export: added container " + templateContainer.GetType().Name);
-                    }
-
-                    project.SaveAs(outputPath);
+                    WriteIFC(outputPath);
 
                     Logger.Info("IFC export finished: " + outputPath +
                         (IFCMethods.SkippedMeshElements.Count > 0
@@ -2131,6 +2090,61 @@ namespace QTO_Tool
                 MessageBox.Show("IFC export failed! Log file: " + Logger.LogFilePath + Environment.NewLine + Environment.NewLine + ex.ToString());
             }
 
+        }
+
+        // Every Xbim-typed local lives in this separate, never-inlined method:
+        // the click handler above then JIT-compiles without Xbim.*, so on a
+        // partial install (missing Xbim DLLs) the FileNotFoundException fires
+        // at THIS method's JIT - at the call site inside the handler's try
+        // block - and surfaces as the friendly log-path dialog. Declared in
+        // the handler itself, the load failure would precede the try block
+        // and escape uncaught to the WPF dispatcher.
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void WriteIFC(string outputPath)
+        {
+            IFCMethods.SkippedMeshElements.Clear();
+
+            // The IfcProject carries the document file name only; the full path
+            // would leak the local folder structure into shared files.
+            string ifcProjectName = System.IO.Path.GetFileNameWithoutExtension(RunQTO.doc.Name);
+
+            if (String.IsNullOrWhiteSpace(ifcProjectName))
+            {
+                ifcProjectName = "QTO Project";
+            }
+
+            IfcStore project = IFCMethods.CreateandInitIFCModel(ifcProjectName);
+
+            IfcBuilding building = IFCMethods.CreateBuilding(project, "Building");
+
+            AllTemplates[] templateContainers = new AllTemplates[]
+            {
+                this.allWalls, this.allBeams, this.allColumns, this.allContinuousFootings,
+                this.allFootings, this.allSlabs, this.allCurbs, this.allStyrofoams, this.allStairs
+            };
+
+            // Union of the floor-name bucket keys across all containers, so
+            // every bucket (including "-") can be routed to a storey.
+            HashSet<string> floorNamesInUse = new HashSet<string>();
+
+            foreach (AllTemplates templateContainer in templateContainers)
+            {
+                floorNamesInUse.UnionWith(templateContainer.allTemplates.Keys);
+            }
+
+            Dictionary<string, IfcBuildingStorey> storeysByFloorName = IFCMethods.CreateBuildingStoreys(
+                project, building, ElevationInput.floorElevations, floorNamesInUse);
+
+            Logger.Info("IFC export: " + storeysByFloorName.Count + " storeys created for floor buckets: " + String.Join(", ", storeysByFloorName.Keys));
+
+            foreach (AllTemplates templateContainer in templateContainers)
+            {
+                IFCMethods.CreateAndAddIFCElement(project, storeysByFloorName, templateContainer);
+
+                Logger.Info("IFC export: added container " + templateContainer.GetType().Name);
+            }
+
+            project.SaveAs(outputPath);
         }
     }
 }

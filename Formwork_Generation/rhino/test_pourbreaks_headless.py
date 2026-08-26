@@ -148,9 +148,16 @@ def scrub(data):
 
 
 def pieces_with_pour(doc, floor):
+    """DECK pieces of a floor. Since pass 4 (2026-08-24) COLUMNS carry
+    POUR/POUR_FLOOR too, so the collector must filter to slab layers or
+    a tagged column would count as a phantom extra piece."""
     out = []
     for obj in doc.Objects:
         if obj is None or obj.Attributes is None:
+            continue
+        layer = doc.Layers[obj.Attributes.LayerIndex]
+        lname = layer.Name if layer is not None else ""
+        if "slab" not in lname.split("_")[0].lower():
             continue
         pour = obj.Attributes.GetUserString("POUR")
         if pour is None or obj.Attributes.GetUserString("POUR_FLOOR") != \
@@ -193,6 +200,15 @@ def main():
     add_box(doc, "Slab_L6", 0, 20, 0, 10, 18.0, 18.2)
     add_box(doc, "Slab_L7", 0, 3, 0, 3, 21.0, 21.2)
     add_box(doc, "Column_1", 4.8, 5.2, 7.8, 8.2, 3.2, 6.0)
+    # pass-4 column fixtures (pour-zone attribution, 2026-08-24):
+    # Column_1 doubles as the inside case - its centroid (5, 8) sits in
+    # L1's upper-left piece (POUR1). Column_2 stands OUTSIDE every L4
+    # deck footprint (x > 5) -> nearest piece's pour. Column_3 stands on
+    # P1, which has no breaks -> must stay untagged. Their tops are kept
+    # clear of every soffit support band so the support-review fixtures
+    # are undisturbed.
+    add_box(doc, "Column_2", 5.5, 5.9, 2.0, 2.4, 12.2, 14.5)
+    add_box(doc, "Column_3", 14.8, 15.2, 4.8, 5.2, 0.2, 2.5)
     doc.Strings.SetString("FloorElevations", json.dumps(
         {"0.2": "P1", "3.2": "L1", "6.2": "L2", "9.2": "L3",
          "12.2": "L4", "15.2": "L5", "18.2": "L6", "21.2": "L7"}))
@@ -406,6 +422,41 @@ def main():
     check("piece stable ids are unique",
           len(set(stamps)) == len(stamps),
           "{0} stamps, {1} unique".format(len(stamps), len(set(stamps))))
+
+    # pass 4 - columns inherit the pour zone they stand in (2026-08-24):
+    # attributes only, name and layer untouched; a column outside every
+    # deck footprint takes the nearest piece's pour (reported as such);
+    # a floor with no zoned deck leaves its columns untagged
+    def col_on(lname):
+        for o in doc.Objects:
+            if o is not None and o.Attributes is not None:
+                lyr = doc.Layers[o.Attributes.LayerIndex]
+                if lyr is not None and lyr.Name == lname:
+                    return o
+        return None
+    c1 = col_on("Column_1")
+    c2 = col_on("Column_2")
+    c3 = col_on("Column_3")
+    check("column inside a piece inherits its POUR (L1 upper-left = 1)",
+          c1 is not None and
+          c1.Attributes.GetUserString("POUR") == "1" and
+          c1.Attributes.GetUserString("POUR_FLOOR") == "L1",
+          str(c1 and (c1.Attributes.GetUserString("POUR"),
+                      c1.Attributes.GetUserString("POUR_FLOOR"))))
+    check("column outside every deck takes the NEAREST piece's pour",
+          c2 is not None and
+          c2.Attributes.GetUserString("POUR") == "1" and
+          c2.Attributes.GetUserString("POUR_FLOOR") == "L4")
+    check("column on an unzoned floor stays untagged",
+          c3 is not None and
+          c3.Attributes.GetUserString("POUR") is None)
+    check("column report counts (tagged/nearest/untagged)",
+          report["floors"]["L1"]["columns"]["tagged"] == 1 and
+          report["floors"]["L4"]["columns"]["tagged"] == 1 and
+          report["floors"]["L4"]["columns"]["nearest"] == 1 and
+          report["floors"]["P1"]["columns"]["untagged"] == 1,
+          str(dict((fl, report["floors"].get(fl, {}).get("columns"))
+                   for fl in ("L1", "L4", "P1"))))
 
     # L3: arc cut — volume conserved, pieces real
     vols3 = [b.GetVolume() for _p, b, _o in p_l3]

@@ -73,6 +73,12 @@ PARAMS = {
     # formwork_gen_rhino / sideform_gen_rhino keep ["sog", "topping"] -
     # nothing shores a slab on grade. Do not re-merge the two lists.
     "slab_layer_exclude": ["topping"],
+    # Columns inherit the pour zone they stand in (decided 2026-08-24):
+    # first '_' segment must contain this to be tagged. Attributes only -
+    # the column keeps its layer, its name and its geometry; the zone is
+    # the POUR user string, mirrored into "QTO Properties" by the QTO
+    # exporter exactly like the deck's. None/"" disables the pass.
+    "column_layer_keyword": "column",
     "extensions_m": (5.0, 20.0, 50.0),      # progressive end extension
     "min_dir_m": 0.05,                      # end-direction sampling chord —
                                             # snap-noise micro segments must
@@ -896,6 +902,106 @@ def split_document(doc, data, params=None, log=None):
                     fl, srec["layer"], pour))
     if n_claimed:
         log("{0} uncut slab(s) claimed by a pour dot".format(n_claimed))
+
+    # pass 4 - columns inherit the pour zone they stand in (decided
+    # 2026-08-24). ATTRIBUTES ONLY: the column is never cut, never moved
+    # off its layer, and its name stays generic - the zone lives in the
+    # POUR user string, which the QTO exporter mirrors into
+    # "QTO Properties" the same way it does for the deck. Assignment is
+    # plan-centroid containment against this floor's POUR-tagged deck
+    # solids (split pieces AND dot-claimed uncut slabs, read back from
+    # the document so both are treated identically); a column riding the
+    # break line goes to whichever side holds its centroid, and one
+    # outside every deck footprint (an edge column) takes the NEAREST
+    # deck's pour - counted separately in the report. NOTE the schedule
+    # pours all columns of a floor in one activity and Mast4D asked for
+    # no column tags: this tag serves per-zone quantity rollups and a
+    # future zoned schedule, and is harmless to FLOOR+name binding.
+    col_kw = (p.get("column_layer_keyword") or "").lower()
+    n_col_tagged = n_col_untagged = 0
+    if col_kw:
+        deck_by_floor = {}
+        for obj in doc.Objects:
+            if obj is None or obj.Attributes is None:
+                continue
+            li = obj.Attributes.LayerIndex
+            if is_pb_layer(doc, li) or fw._is_formwork_layer(doc, li):
+                continue
+            layer = doc.Layers[li]
+            lname = layer.Name if layer is not None else ""
+            if keyword not in lname.split("_")[0].lower():
+                continue
+            if any(kw and kw.lower() in lname.lower() for kw in excludes):
+                continue
+            pour = obj.Attributes.GetUserString("POUR")
+            pfl = obj.Attributes.GetUserString("POUR_FLOOR")
+            if not pour or pour == "0" or not pfl:
+                continue
+            geom = obj.Geometry
+            if isinstance(geom, Rhino.Geometry.Extrusion):
+                geom = geom.ToBrep(True)
+            if isinstance(geom, Brep):
+                deck_by_floor.setdefault(pfl, []).append((geom, pour))
+
+        def _col_rep(fl):
+            return floor_report(fl).setdefault(
+                "columns", {"tagged": 0, "nearest": 0, "untagged": 0,
+                            "by_pour": {}})
+
+        for obj in list(doc.Objects):
+            if obj is None or obj.Attributes is None:
+                continue
+            li = obj.Attributes.LayerIndex
+            if is_pb_layer(doc, li) or fw._is_formwork_layer(doc, li):
+                continue
+            layer = doc.Layers[li]
+            lname = layer.Name if layer is not None else ""
+            if col_kw not in lname.split("_")[0].lower():
+                continue
+            geom = obj.Geometry
+            if isinstance(geom, Rhino.Geometry.Extrusion):
+                geom = geom.ToBrep(True)
+            if not isinstance(geom, Brep):
+                continue
+            bb = geom.GetBoundingBox(True)
+            fl = floor_of(bb.Min.Z)
+            decks = deck_by_floor.get(fl)
+            if not decks:
+                # a floor with no tagged deck (no breaks, no claims -
+                # e.g. the single-pour P1) leaves its columns untagged
+                n_col_untagged += 1
+                _col_rep(fl)["untagged"] += 1
+                continue
+            vm = VolumeMassProperties.Compute(geom)
+            cx = vm.Centroid.X if vm else (bb.Min.X + bb.Max.X) / 2.0
+            cy = vm.Centroid.Y if vm else (bb.Min.Y + bb.Max.Y) / 2.0
+            hits = sorted(set(pr for g, pr in decks
+                              if point_in_piece(g, cx, cy, tol)))
+            how = "inside"
+            if hits:
+                pour = hits[0]
+            else:
+                pour = min(decks, key=lambda gp: _dist_xy_to_box(
+                    cx, cy, gp[0].GetBoundingBox(True)))[1]
+                how = "nearest"
+            attr = obj.Attributes.Duplicate()
+            attr.SetUserString("POUR", str(pour))
+            attr.SetUserString("POUR_FLOOR", fl)
+            if doc.Objects.ModifyAttributes(obj, attr, True):
+                n_col_tagged += 1
+                crep = _col_rep(fl)
+                crep["tagged"] += 1
+                if how == "nearest":
+                    crep["nearest"] += 1
+                crep["by_pour"][str(pour)] = \
+                    crep["by_pour"].get(str(pour), 0) + 1
+            else:
+                log("  WARNING: {0}: column could not be tagged with "
+                    "POUR {1}".format(fl, pour))
+    if n_col_tagged or n_col_untagged:
+        log("{0} column(s) tagged with their pour zone, {1} left "
+            "untagged (no zoned deck on their floor)".format(
+                n_col_tagged, n_col_untagged))
 
     # review metrics per floor
     for fl, frep in report["floors"].items():

@@ -895,6 +895,13 @@ namespace QTO_Tool
                         p.NominalValue = new IfcReal(Math.Round(columnTemplate.height, 2));
                     })
                     });
+
+                    // Columns inherit the pour zone they stand in since
+                    // 2026-08-24 (the splitter tags them by plan containment
+                    // against the floor's POUR-tagged deck solids). Mirrored
+                    // onto the same property path as the deck's and the
+                    // formwork's; no-op for models split before the change.
+                    AddPourProperties(model, pset, columnTemplate.AttributeUserStrings);
                 });
             });
 

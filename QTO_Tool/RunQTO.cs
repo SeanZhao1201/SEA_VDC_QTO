@@ -62,6 +62,15 @@ namespace QTO_Tool
             Logger.StartSession();
             Logger.Info("Document: " + RunQTO.doc.Path + " | Units: " + RunQTO.doc.GetUnitSystemName(true, true, true, true));
 
+            // A partial install (the .rhp without its DLLs) must refuse here,
+            // with the missing files named - not at the first export that
+            // happens to touch the missing assembly. Re-checked per command
+            // run, so re-extracting the zip recovers without restarting Rhino.
+            if (!DependencyPreflight.Check())
+            {
+                return Result.Failure;
+            }
+
             string modelUnit = RunQTO.doc.GetUnitSystemName(true, true, true, true);
             RunQTO.volumeConversionFactor = Methods.SetVolumeConversionFactor(modelUnit);
             RunQTO.areaConversionFactor = Methods.SetAreaConversionFactor(modelUnit);

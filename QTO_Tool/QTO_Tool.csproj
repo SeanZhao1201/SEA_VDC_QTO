@@ -19,7 +19,9 @@
          .NET Framework targeting pack (dotnet build locally and on CI). -->
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
     <!-- Excel export writes the workbook directly from the embedded template.
-         Desktop Excel is not required and is never launched. -->
+         Desktop Excel is not required and is never launched.
+         When a package change adds or removes shipped DLLs, keep
+         DependencyPreflight.RequiredDlls in step. -->
     <PackageReference Include="ClosedXML" Version="0.105.1" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="RhinoCommon" Version="7.28.23058.3001" />

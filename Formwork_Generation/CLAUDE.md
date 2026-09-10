@@ -80,8 +80,10 @@ formwork for visualization and 4D sequencing, not engineered falsework design
 - `requirements.txt` — ifcopenshell / shapely / numpy / pytest.
 - `sample/Sunbreak_TestV5.ifc` — validated demo input (~4.9 MB). **Local only,
   git-ignored** — kept in the working repo, not pushed to GitHub. Exported
-  from `_Sunbreak WIP\0706 Sunbreak Model\
-  05-07-2024_Bellwhether_Concrete_UPDATED_R7.3dm` (18 MB, also local-only).
+  from `05-07-2024_Bellwhether_Concrete_UPDATED_R7.3dm` (18 MB, also
+  local-only; since 2026-09-09 at `_Sunbreak WIP\_Sunbreak Concrete Baseline
+  Model\00_Original R7 (read-only)\`, formerly `_Sunbreak WIP\0706 Sunbreak
+  Model\`).
 
 ## Invariants — the formwork must satisfy all six (do not regress)
 

@@ -4,6 +4,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development status — 2026-08-26 (keep this section current when work lands)
 
+**Source model relocated (2026-09-09).** The Sunbreak concrete model every
+test starts from now lives in the sibling folder
+`..\..\_Sunbreak WIP\_Sunbreak Concrete Baseline Model\` (README.md +
+SHA256SUMS.txt inside): `01_Working R7 With Floor Info\` holds
+`05-07-2024_Bellwhether_Concrete_UPDATED_R7_With Floor info.3dm` (the file
+the UI opens; the `_breaks.*.json` schemes sit next to it, `Pourbreak1` ==
+`Scheme-A0820` is the current one), `00_Original R7 (read-only)\` the
+pristine 2026-07-06 R7 export, `02_Backups (read-only)\` the 08-17 copy and
+the 08-20 `.3dmbak`. Moved byte-identical (9/9 SHA256 verified). Side
+effect: the staged derived model's sidecar records the OLD doc path, so
+re-run SPLIT once before the next GENERATE. The WIP root is now six
+`_Sunbreak ...` folders and nothing loose: the Baseline above;
+`_Sunbreak Archive (read-only)\` (June IFC structure tests, the 0701/0706
+handover folders, July prototype IFCs, the 160 MB full-size saves, the
+08-20 Mast4D handover — six numbered, dated folders, README.md +
+SHA256SUMS.txt, 25/25 verified — plus `99_Quarantine (safe to delete)\`:
+45 autosave/temp/thumbnail files, 709 MB, swept out of the Turner folder
+at their original relative paths with a SHA256 manifest, awaiting the
+user's delete); `_Sunbreak Schedules (P6 exports)\` (Turner's two P6
+XMLs, numbered); `_Sunbreak Reference\` (pitch deck, pour-break PDF);
+`_Sunbreak Revit Central Model (read-only)\`; and `_Sunbreak Turner
+Project Folder (as received, read-only)\` (formerly `Project sunbreak`,
+9.5 GB, 365 files, nothing inside written since 2026-08-12; its
+`12-Model_Estimate\02-Concrete\` holds Turner's R1→R4→GMP model chain —
+the Baseline README's provenance section maps our line onto it and notes
+that `R7` in the file names means a Rhino 7 save, not revision 7).
+**"read-only" is a NAME-ONLY convention** (user decision 2026-09-09): no
+Windows read-only attribute is set on any file under `_Sunbreak WIP` —
+copies inherit it and Rhino/SketchUp/Revit and staging scripts behave
+differently on it — so protection = folder suffix + README + checksums.
+
 **Nathan's 2026-08-25 Excel-export crash: DIAGNOSED (not our bug) +
 HARDENED (2026-08-26).** His `FileNotFoundException` for ClosedXML
 0.105.1.0 was adversarially confirmed as a **partial install**: his
